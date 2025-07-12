@@ -1,5 +1,5 @@
 flask
-openai
-azure-core
-azure-search-documents
 gunicorn
+azure-core
+azure-identity
+azure-search-documents
