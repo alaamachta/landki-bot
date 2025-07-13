@@ -1,32 +1,35 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
-import openai
+from openai import AzureOpenAI
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 
 app = Flask(__name__)
 CORS(app)
 
-# 🔐 Konfiguration aus Umgebungsvariablen
+# Umgebungsvariablen laden
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
+
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# Setup Clients
+# Azure OpenAI Client
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    api_version="2024-05-01-preview",
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
+)
+
+# Azure Search Client
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
-
-openai.api_type = "azure"
-openai.api_key = AZURE_OPENAI_KEY
-openai.api_base = AZURE_OPENAI_ENDPOINT
-openai.api_version = "2024-05-01-preview"
 
 @app.route("/")
 def home():
@@ -35,9 +38,12 @@ def home():
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json()
-    question = data.get("message")
+    question = data.get("message", "")
 
-    # Suche relevante Dokumente in Azure Search
+    if not question:
+        return jsonify({"response": "❌ Keine Frage erhalten."}), 400
+
+    # Suche in Azure Search
     search_results = search_client.search(question)
     docs = []
     for result in search_results:
@@ -47,17 +53,17 @@ def chat():
         if len(docs) >= 3:
             break
 
-    context = "\n\n".join(docs) if docs else "Keine passenden Informationen gefunden."
+    context = "\n\n".join(docs) if docs else "Keine relevanten Inhalte gefunden."
 
-    # GPT-4o Antwort basierend auf Kontext
-    response = openai.ChatCompletion.create(
-        engine=AZURE_OPENAI_DEPLOYMENT,
+    # GPT-4o Antwort generieren
+    response = client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
         messages=[
-            {"role": "system", "content": "Beantworte Fragen nur basierend auf folgendem Kontext:"},
+            {"role": "system", "content": "Beantworte Fragen nur basierend auf dem folgenden Kontext:"},
             {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
         ],
         temperature=0.4
     )
 
-    answer = response.choices[0].message["content"]
+    answer = response.choices[0].message.content
     return jsonify({"response": answer})
