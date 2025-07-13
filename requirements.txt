@@ -2,3 +2,4 @@ flask
 gunicorn
 azure-search-documents
 openai
+flask-cors
