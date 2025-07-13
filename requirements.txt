@@ -1,6 +1,6 @@
 flask
 flask-cors
 gunicorn
-openai
+openai>=1.0.0
 azure-search-documents
 azure-identity
