@@ -4,6 +4,9 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 import os
+import random
+import time
+import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
@@ -46,26 +49,40 @@ def env():
 def chat():
     try:
         data = request.get_json()
-        question = data.get("message", "").strip()
+        question = data.get("message", "").strip().lower()
 
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # Azure Search Abfrage
+        # 🎉 Smalltalk direkt beantworten (ohne GPT)
+        smalltalk = ["hi", "hallo", "hey", "servus", "moin", "guten tag"]
+        if question in smalltalk:
+            antworten = [
+                "👋 Hallo! Schön, dass du da bist. Was möchtest du wissen?",
+                "Hey! 😊 Wie kann ich dir weiterhelfen?",
+                "Hallo! Was möchtest du über LandKI wissen?",
+                "Hi! Frag mich gerne was zu unseren Leistungen oder Angeboten."
+            ]
+            return jsonify({"response": random.choice(antworten)})
+
+        # 🔎 Azure Search Abfrage (Top 3)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
             content = result.get("content", "") or result.get("text", "")
             if content:
-                docs.append(content)
+                docs.append(content.strip())
             if len(docs) >= 3:
                 break
 
         context = "\n\n".join(docs).strip()
         if not context:
-            context = "Keine passenden Informationen gefunden."
+            return jsonify({
+                "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
+            })
 
-        # GPT-4o Antwort generieren
+        # 🧠 GPT-4o Anfrage vorbereiten
+        start = time.time()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
@@ -79,10 +96,13 @@ def chat():
             temperature=0.4,
             max_tokens=800
         )
+        end = time.time()
+        print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
         answer = response.choices[0].message.content.strip()
         return jsonify({"response": answer})
 
     except Exception as e:
-        print("❌ Fehler im /chat-Endpoint:", str(e))
-        return jsonify({"response": "❌ Interner Serverfehler: " + str(e)}), 500
+        print("❌ Fehler im /chat-Endpoint:")
+        traceback.print_exc()
+        return jsonify({"response": "❌ Interner Fehler beim Antworten. Bitte versuch es später nochmal."}), 500
