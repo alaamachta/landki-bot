@@ -6,7 +6,7 @@ from openai import AzureOpenAI
 import os
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/chat": {"origins": "*"}})
 
 # Umgebungsvariablen laden
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
@@ -61,19 +61,26 @@ def chat():
             if len(docs) >= 3:
                 break
 
-        context = "\n\n".join(docs) if docs else "Kein relevanter Kontext gefunden."
+        context = "\n\n".join(docs).strip()
+        if not context:
+            context = "Keine passenden Informationen gefunden."
 
         # GPT-4o Antwort generieren
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": "Beantworte nur auf Basis des Kontexts:"},
+                {"role": "system", "content": (
+                    "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                    "Antworte bitte nur auf Basis des folgenden Kontexts. "
+                    "Wenn du etwas nicht weißt, sag offen, dass du dazu keine Informationen hast."
+                )},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
-            temperature=0.4
+            temperature=0.4,
+            max_tokens=800
         )
 
-        answer = response.choices[0].message.content
+        answer = response.choices[0].message.content.strip()
         return jsonify({"response": answer})
 
     except Exception as e:
