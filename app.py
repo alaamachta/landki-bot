@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
@@ -10,7 +10,6 @@ import markdown2
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
-app.secret_key = os.getenv("APP_SECRET_KEY", "supersecret")  # Session-Schutz
 
 # 🔐 Umgebungsvariablen laden
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
@@ -27,7 +26,7 @@ search_client = SearchClient(
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
-# 🤖 GPT-Client
+# 🤖 GPT-Client (GPT-4o)
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
@@ -36,33 +35,24 @@ client = AzureOpenAI(
 
 @app.route("/")
 def home():
-    return "✅ LandKI Bot mit GPT-4o & Azure Search (Umschaltbarer Ton) ist aktiv!"
+    return "✅ LandKI Bot mit GPT-4o & Azure Search ist aktiv!"
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.get_json()
-        question = data.get("message", "").strip().lower()
+        raw_question = data.get("message", "").strip()
+        question = raw_question.lower()
 
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 👋 Smalltalk (z. B. Begrüßung)
-        greetings = ["hi", "hallo", "hey", "servus", "moin", "guten tag"]
-        if question in greetings:
-            return jsonify({"response": "👋 Hallo! Ich bin LandKI – möchtest du lieber per Du oder Sie angesprochen werden?"})
+        # 👉 Smalltalk direkt beantworten
+        smalltalk = ["hi", "hallo", "hey", "servus", "moin", "guten tag"]
+        if question in smalltalk:
+            return jsonify({"response": "Hey! 😊 Wie kann ich dir weiterhelfen?"})
 
-        # 🎯 Sprachstil erkennen und setzen
-        if "siezen" in question or "sie" in question:
-            session['tone'] = "sie"
-            return jsonify({"response": "Natürlich. Ich werde Sie ab jetzt mit *Sie* ansprechen."})
-        elif "duzen" in question or "du" in question:
-            session['tone'] = "du"
-            return jsonify({"response": "Alles klar – ich spreche dich ab jetzt gerne mit *Du* an."})
-
-        tone = session.get('tone', 'du')  # Standard: du
-
-        # 🔍 Azure Search Ergebnisse sammeln
+        # 🔍 Azure Search Ergebnisse (Top 3 Dokumente)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -79,31 +69,38 @@ def chat():
                 "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
+        # 🔒 Kontext begrenzen
         if len(context) > 1500:
             context = context[:1000]
 
-        # 🤖 Dynamische system-Nachricht
-        if tone == "sie":
-            system_message = (
-                "Du bist LandKI – der KI-Assistent von IT-Land. Sprich bitte in der höflichen *Sie*-Form."
-                " Du antwortest im Namen von IT-Land und nutzt nur den bereitgestellten Kontext."
+        # 🧠 Dynamische Anrede-Erkennung
+        tone = "du"
+        if any(phrase in question for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
+            tone = "sie"
+
+        if tone == "du":
+            persona = (
+                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Sprich den Nutzer in der Du-Form an. Antworte auf Basis des Kontexts. "
+                "Wenn du etwas nicht weißt, sag das offen und freundlich."
             )
         else:
-            system_message = (
-                "Du bist LandKI – unser freundlicher KI-Assistent bei IT-Land."
-                " Du sprichst im Namen unseres Teams in der lockeren *Du*-Form."
-                " Du antwortest auf Basis des bereitgestellten Kontexts. Wenn etwas nur indirekt erwähnt wird, darfst du logisch ergänzen (z. B. Telefonnummer für WhatsApp). Wenn du etwas nicht weißt, sei ehrlich und hilfsbereit."
+            persona = (
+                "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie auf Basis des Kontexts. "
+                "Wenn Sie etwas nicht wissen, sagen Sie das offen und höflich."
             )
 
+        # 💬 GPT-4o anfragen
         start = time.time()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
+                {"role": "system", "content": persona},
+                {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{raw_question}"}
             ],
             temperature=0.4,
-            max_tokens=600
+            max_tokens=600,
         )
         end = time.time()
         print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
