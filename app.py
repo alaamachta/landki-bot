@@ -78,20 +78,20 @@ def chat():
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": (
-                    "Du bist LandKI – der freundliche KI-Assistent von it-land.net. Nutze den bereitgestellten Kontext so gut wie möglich. Wenn etwas im Kontext nur indirekt steht, darfst du logische Schlüsse ziehen (z. B. wenn eine Telefonnummer für WhatsApp genutzt wird). Wenn du etwas gar nicht weißt, sei ehrlich und weise freundlich darauf hin."
+                    "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                    "Nutze den bereitgestellten Kontext so gut wie möglich. Wenn etwas im Kontext nur indirekt steht, "
+                    "darfst du logische Schlüsse ziehen (z. B. wenn eine Telefonnummer für WhatsApp genutzt wird). "
+                    "Wenn du etwas gar nicht weißt, sei ehrlich und weise freundlich darauf hin."
                 )},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
             max_tokens=600,        # Begrenzte Antwortlänge
-            timeout=20             # Timeout-Schutz (Sekunden)
         )
         end = time.time()
         print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
-        answer = response.choices[0].message.content.strip()
-        # Sterne entfernen
-        answer = answer.replace("**", "")
+        answer_raw = response.choices[0].message.content.strip()
         answer_html = markdown2.markdown(answer_raw)
         return jsonify({"response": answer_html})
 
