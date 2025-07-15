@@ -4,3 +4,4 @@ gunicorn
 openai>=1.0.0
 azure-search-documents
 azure-identity
+markdown2
