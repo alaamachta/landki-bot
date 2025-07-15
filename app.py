@@ -4,14 +4,13 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 import os
-import random
 import time
 import traceback
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
-# 🔐 Secrets/Umgebungsvariablen laden
+# 🔐 Umgebungsvariablen laden
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
@@ -19,14 +18,14 @@ AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# 🔎 Azure Cognitive Search initialisieren
+# 🔎 Azure Search Client
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
-# 🤖 GPT-4o über Azure Foundry (neues Projekt)
+# 🤖 GPT-Client (GPT-4o)
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
@@ -35,16 +34,7 @@ client = AzureOpenAI(
 
 @app.route("/")
 def home():
-    return "✅ LandKI Bot ist online – mit GPT-4o & Azure Search!"
-
-@app.route("/env")
-def env():
-    return jsonify({
-        "AZURE_OPENAI_KEY": bool(AZURE_OPENAI_KEY),
-        "AZURE_SEARCH_KEY": bool(AZURE_SEARCH_KEY),
-        "AZURE_SEARCH_ENDPOINT": AZURE_SEARCH_ENDPOINT,
-        "AZURE_OPENAI_DEPLOYMENT": AZURE_OPENAI_DEPLOYMENT
-    })
+    return "✅ LandKI Bot mit GPT-4o & Azure Search ist aktiv!"
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -55,18 +45,12 @@ def chat():
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 🧠 Smalltalk direkt beantworten (ohne GPT)
+        # 👉 Smalltalk direkt beantworten
         smalltalk = ["hi", "hallo", "hey", "servus", "moin", "guten tag"]
         if question in smalltalk:
-            antworten = [
-                "👋 Hallo! Schön, dass du da bist. Was möchtest du wissen?",
-                "Hey! 😊 Wie kann ich dir weiterhelfen?",
-                "Hallo! Was möchtest du über LandKI wissen?",
-                "Hi! Frag mich gerne was zu unseren Leistungen oder Angeboten."
-            ]
-            return jsonify({"response": random.choice(antworten)})
+            return jsonify({"response": "Hey! 😊 Wie kann ich dir weiterhelfen?"})
 
-        # 🔍 Azure Search – Top 3 relevante Inhalte
+        # 🔍 Azure Search Ergebnisse (Top 3 Dokumente)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -77,12 +61,17 @@ def chat():
                 break
 
         context = "\n\n".join(docs).strip()
+
         if not context:
             return jsonify({
                 "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
-        # 💬 GPT-4o Anfrage starten
+        # 🔒 Kontext begrenzen
+        if len(context) > 3000:
+            context = context[:3000]
+
+        # 💬 GPT-4o anfragen
         start = time.time()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -95,7 +84,8 @@ def chat():
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
-            max_tokens=800
+            max_tokens=600,        # Begrenzte Antwortlänge
+            timeout=20             # Timeout-Schutz (Sekunden)
         )
         end = time.time()
         print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
@@ -104,6 +94,6 @@ def chat():
         return jsonify({"response": answer})
 
     except Exception as e:
-        print("❌ Fehler im /chat-Endpoint:")
+        print("❌ Fehler im /chat-Endpoint:", str(e))
         traceback.print_exc()
-        return jsonify({"response": "❌ Interner Fehler beim Antworten. Bitte versuch es später nochmal."}), 500
+        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
