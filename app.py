@@ -6,6 +6,7 @@ from openai import AzureOpenAI
 import os
 import time
 import traceback
+import markdown2
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
@@ -77,9 +78,7 @@ def chat():
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": (
-                    "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                    "Antworte bitte nur auf Basis des folgenden Kontexts. "
-                    "Wenn du etwas nicht weißt, sag offen, dass du dazu keine Informationen hast."
+                    "Du bist LandKI – der freundliche KI-Assistent von it-land.net. Nutze den bereitgestellten Kontext so gut wie möglich. Wenn etwas im Kontext nur indirekt steht, darfst du logische Schlüsse ziehen (z. B. wenn eine Telefonnummer für WhatsApp genutzt wird). Wenn du etwas gar nicht weißt, sei ehrlich und weise freundlich darauf hin."
                 )},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
@@ -93,7 +92,8 @@ def chat():
         answer = response.choices[0].message.content.strip()
         # Sterne entfernen
         answer = answer.replace("**", "")
-        return jsonify({"response": answer})
+        answer_html = markdown2.markdown(answer_raw)
+        return jsonify({"response": answer_html})
 
     except Exception as e:
         print("❌ Fehler im /chat-Endpoint:", str(e))
