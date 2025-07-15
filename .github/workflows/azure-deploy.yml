@@ -13,10 +13,10 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v3
 
-    - name: Setup Python
+    - name: Setup Python (gleich wie Azure)
       uses: actions/setup-python@v4
       with:
-        python-version: '3.11'
+        python-version: '3.13'  # Genau wie in Azure App Service
 
     - name: Install dependencies
       run: |
