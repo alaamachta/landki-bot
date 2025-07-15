@@ -79,8 +79,8 @@ def chat():
                 "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
-        if len(context) > 3000:
-            context = context[:3000]
+        if len(context) > 1500:
+            context = context[:1000]
 
         # 🤖 Dynamische system-Nachricht
         if tone == "sie":
