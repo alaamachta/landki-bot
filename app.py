@@ -91,6 +91,8 @@ def chat():
         print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
         answer = response.choices[0].message.content.strip()
+        # Sterne entfernen
+        answer = answer.replace("**", "")
         return jsonify({"response": answer})
 
     except Exception as e:
