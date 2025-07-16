@@ -41,18 +41,38 @@ def home():
 def chat():
     try:
         data = request.get_json()
-        raw_question = data.get("message", "").strip()
-        question = raw_question.lower()
-
+        question = data.get("message", "").strip()
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 👉 Smalltalk direkt beantworten
-        smalltalk = ["hi", "hallo", "hey", "servus", "moin", "guten tag"]
-        if question in smalltalk:
-            return jsonify({"response": "Hey! 😊 Wie kann ich dir weiterhelfen?"})
+        # 🔍 Anredeform & Sprache automatisch erkennen
+        q_lower = question.lower()
+        tone = "du"
+        if any(phrase in q_lower for phrase in [
+            " sie ", "ihnen", "ihr unternehmen", "können sie", "kann ich sie", 
+            "wie erreiche ich sie", "was bieten sie", "mit ihnen sprechen"
+        ]):
+            tone = "sie"
 
-        # 🔍 Azure Search Ergebnisse (Top 3 Dokumente)
+        # 🧠 System-Prompt dynamisch erzeugen
+        if tone == "du":
+            persona = (
+                "Du bist LandKI – der freundliche, mehrsprachige KI-Assistent von it-land.net. "
+                "Sprich den Nutzer **in der Du-Form** an. "
+                "Antworte **in der Sprache**, in der die Frage gestellt wurde – z. B. Arabisch, Englisch oder Französisch. "
+                "Nutze den bereitgestellten Kontext. "
+                "Wenn du keine passende Information findest, sag das ehrlich und freundlich."
+            )
+        else:
+            persona = (
+                "Sie sind LandKI – der professionelle, mehrsprachige KI-Assistent von it-land.net. "
+                "Sprechen Sie den Nutzer **in der Sie-Form** an. "
+                "Antworten Sie **in der Sprache**, in der die Frage gestellt wurde – z. B. Arabisch, Englisch oder Französisch. "
+                "Nutzen Sie den bereitgestellten Kontext. "
+                "Falls Sie keine passende Information finden, sagen Sie das bitte höflich."
+            )
+
+        # 🔍 Suche im Index (Azure Cognitive Search)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -66,49 +86,27 @@ def chat():
 
         if not context:
             return jsonify({
-                "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
+                "response": "Ich habe dazu leider keine passenden Informationen gefunden. "
+                            "Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
-        # 🔒 Kontext begrenzen
         if len(context) > 1500:
-            context = context[:1000]
+            context = context[:1000]  # Performance-Optimierung
 
-        # 🧠 Dynamische Anrede-Erkennung
-        tone = "du"
-        if any(phrase in question for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
-            tone = "sie"
-
-        if tone == "du":
-            persona = (
-                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprich den Nutzer in der Du-Form an. Antworte ausschließlich auf Basis des bereitgestellten Kontexts. "
-                "Sprich in der Sprache, in der die Frage gestellt wurde. "
-                "Wenn du etwas nicht weißt, sag das offen und freundlich."
-            )
-        else:
-            persona = (
-                "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie auf Basis des Kontexts. "
-                "Sprechen Sie in der Sprache, in der die Frage gestellt wurde. "
-                "Wenn Sie etwas nicht wissen, sagen Sie das bitte offen und höflich."
-            )
-
-        # 💬 GPT-4o anfragen
-        start = time.time()
+        # 🤖 GPT-4o anfragen
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": persona},
-                {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{raw_question}"}
+                {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
-            max_tokens=600,
+            max_tokens=600
         )
-        end = time.time()
-        print(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
-        answer_raw = response.choices[0].message.content.strip()
-        answer_html = markdown2.markdown(answer_raw)
+        answer = response.choices[0].message.content.strip()
+        answer_html = markdown2.markdown(answer)
+
         return jsonify({"response": answer_html})
 
     except Exception as e:
