@@ -1,28 +1,15 @@
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 from langdetect import detect
+from googletrans import Translator
 import os
-import time
 import traceback
-import logging
 import markdown2
-from deep_translator import GoogleTranslator
 
-# 📋 Logging konfigurieren
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler("landki_bot.log"),
-        logging.StreamHandler()
-    ]
-)
-logging.info("📋 Logging wurde erfolgreich konfiguriert.")
-
-# 🛠️ Flask & CORS Setup
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
@@ -34,19 +21,19 @@ AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# 🔎 Azure Search Client
+# Azure Search Client & GPT-Client
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
-
-# 🤖 GPT-Client
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
+
+translator = Translator()
 
 @app.route("/")
 def home():
@@ -62,9 +49,8 @@ def chat():
 
         # 🌍 Sprache erkennen
         lang = detect(question)
-        logging.info(f"🌐 Erkannte Sprache: {lang}")
 
-        # 🧠 Anrede erkennen (nur bei Deutsch)
+        # 🧠 Anrede-Tonfall erkennen (nur bei Deutsch)
         tone = "neutral"
         if lang == "de":
             if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
@@ -72,7 +58,7 @@ def chat():
             else:
                 tone = "du"
 
-        # 🧠 Persona definieren
+        # 👤 Persona dynamisch anpassen
         if tone == "du":
             persona = (
                 "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
@@ -92,7 +78,7 @@ def chat():
                 "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
             )
 
-        # 🔍 Azure Search (max 3 Ergebnisse)
+        # 🔎 Suche im Index (Azure Cognitive Search)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -102,45 +88,46 @@ def chat():
             if len(docs) >= 3:
                 break
 
-        context = "\n\n".join(docs).strip()
+        context = "
 
-        if not context:
+".join(docs).strip()
+
+        # 🌐 Kontext übersetzen (wenn Sprache ≠ Deutsch)
+        if lang != "de" and context:
+            translated_context = translator.translate(context, src="de", dest=lang).text
+        else:
+            translated_context = context
+
+        if not translated_context:
             return jsonify({
                 "response": "Ich habe dazu leider keine passenden Informationen gefunden. "
                             "Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
-        # 🌐 Kontext übersetzen (optional)
-        if lang != "de":
-            try:
-                context = GoogleTranslator(source='de', target=lang).translate(context)
-                logging.info("🌍 Kontext wurde übersetzt.")
-            except Exception as trans_err:
-                logging.warning(f"⚠️ Fehler bei der Übersetzung des Kontexts: {trans_err}")
+        if len(translated_context) > 1500:
+            translated_context = translated_context[:1000]
 
-        if len(context) > 1500:
-            context = context[:1000]  # Performance-Optimierung
-
-        # 🤖 GPT-4o Anfrage
-        start = time.time()
+        # 🤖 GPT-4o anfragen
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": persona},
-                {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
+                {"role": "user", "content": f"Kontext:
+{translated_context}
+
+Frage:
+{question}"}
             ],
             temperature=0.4,
             max_tokens=600
         )
-        end = time.time()
-        logging.info(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
-        # 🧾 Antwort verarbeiten
         answer = response.choices[0].message.content.strip()
         answer_html = markdown2.markdown(answer)
+
         return jsonify({"response": answer_html})
 
     except Exception as e:
-        logging.error("❌ Fehler im /chat-Endpoint:")
+        print("❌ Fehler im /chat-Endpoint:", str(e))
         traceback.print_exc()
-        return jsonify({"response": f"❌ Interner Fehler: {str(e)}"}), 500
+        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
