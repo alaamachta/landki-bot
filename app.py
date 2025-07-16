@@ -3,12 +3,26 @@ from flask_cors import CORS
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
+from langdetect import detect
 import os
 import time
 import traceback
+import logging
 import markdown2
-from langdetect import detect
+from deep_translator import GoogleTranslator
 
+# 📋 Logging konfigurieren
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("landki_bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logging.info("📋 Logging wurde erfolgreich konfiguriert.")
+
+# 🛠️ Flask & CORS Setup
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
@@ -43,12 +57,14 @@ def chat():
     try:
         data = request.get_json()
         question = data.get("message", "").strip()
-
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 🧠 Sprache & Ton analysieren
+        # 🌍 Sprache erkennen
         lang = detect(question)
+        logging.info(f"🌐 Erkannte Sprache: {lang}")
+
+        # 🧠 Anrede erkennen (nur bei Deutsch)
         tone = "neutral"
         if lang == "de":
             if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
@@ -56,7 +72,7 @@ def chat():
             else:
                 tone = "du"
 
-        # 🎭 Persona definieren
+        # 🧠 Persona definieren
         if tone == "du":
             persona = (
                 "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
@@ -76,7 +92,7 @@ def chat():
                 "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
             )
 
-        # 🔍 Azure Search verwenden
+        # 🔍 Azure Search (max 3 Ergebnisse)
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -94,10 +110,19 @@ def chat():
                             "Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
+        # 🌐 Kontext übersetzen (optional)
+        if lang != "de":
+            try:
+                context = GoogleTranslator(source='de', target=lang).translate(context)
+                logging.info("🌍 Kontext wurde übersetzt.")
+            except Exception as trans_err:
+                logging.warning(f"⚠️ Fehler bei der Übersetzung des Kontexts: {trans_err}")
+
         if len(context) > 1500:
             context = context[:1000]  # Performance-Optimierung
 
-        # 💬 GPT-4o anfragen
+        # 🤖 GPT-4o Anfrage
+        start = time.time()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
@@ -107,13 +132,15 @@ def chat():
             temperature=0.4,
             max_tokens=600
         )
+        end = time.time()
+        logging.info(f"✅ GPT-Antwortzeit: {end - start:.2f} Sekunden")
 
+        # 🧾 Antwort verarbeiten
         answer = response.choices[0].message.content.strip()
         answer_html = markdown2.markdown(answer)
-
         return jsonify({"response": answer_html})
 
     except Exception as e:
-        print("❌ Fehler im /chat-Endpoint:", str(e))
+        logging.error("❌ Fehler im /chat-Endpoint:")
         traceback.print_exc()
-        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
+        return jsonify({"response": f"❌ Interner Fehler: {str(e)}"}), 500
