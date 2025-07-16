@@ -1,10 +1,14 @@
 flask>=2.2.0
 flask-cors>=3.0.10
 gunicorn>=20.1.0
-openai>=1.14.3            # GPT-4o-kompatibel (Azure)
-azure-search-documents>=11.4.0
-azure-core>=1.29.4
-azure-identity>=1.15.0
-markdown2>=2.4.12
+
+openai==1.10.0         # funktioniert stabil mit Azure GPT-4o
+httpx==0.24.1          # kompatibel mit openai 1.10.0
+
+azure-search-documents==11.4.0
+azure-core==1.29.4
+azure-identity==1.15.0
+
+markdown2==2.4.12
 langdetect
 googletrans==4.0.0-rc1
