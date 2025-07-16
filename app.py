@@ -7,6 +7,7 @@ import os
 import time
 import traceback
 import markdown2
+from langdetect import detect
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
@@ -26,7 +27,7 @@ search_client = SearchClient(
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
-# 🤖 GPT-Client (GPT-4o)
+# 🤖 GPT-Client
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
@@ -42,37 +43,40 @@ def chat():
     try:
         data = request.get_json()
         question = data.get("message", "").strip()
+
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 🔍 Anredeform & Sprache automatisch erkennen
-        q_lower = question.lower()
-        tone = "du"
-        if any(phrase in q_lower for phrase in [
-            " sie ", "ihnen", "ihr unternehmen", "können sie", "kann ich sie", 
-            "wie erreiche ich sie", "was bieten sie", "mit ihnen sprechen"
-        ]):
-            tone = "sie"
+        # 🧠 Sprache & Ton analysieren
+        lang = detect(question)
+        tone = "neutral"
+        if lang == "de":
+            if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
+                tone = "sie"
+            else:
+                tone = "du"
 
-        # 🧠 System-Prompt dynamisch erzeugen
+        # 🎭 Persona definieren
         if tone == "du":
             persona = (
-                "Du bist LandKI – der freundliche, mehrsprachige KI-Assistent von it-land.net. "
-                "Sprich den Nutzer **in der Du-Form** an. "
-                "Antworte **in der Sprache**, in der die Frage gestellt wurde – z. B. Arabisch, Englisch oder Französisch. "
-                "Nutze den bereitgestellten Kontext. "
-                "Wenn du keine passende Information findest, sag das ehrlich und freundlich."
+                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und auf Basis des bereitgestellten Kontexts. "
+                "Wenn du etwas nicht weißt, sag das offen und freundlich."
+            )
+        elif tone == "sie":
+            persona = (
+                "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in seiner Sprache und auf Basis des bereitgestellten Kontexts. "
+                "Wenn Sie etwas nicht wissen, sagen Sie das bitte offen und höflich."
             )
         else:
             persona = (
-                "Sie sind LandKI – der professionelle, mehrsprachige KI-Assistent von it-land.net. "
-                "Sprechen Sie den Nutzer **in der Sie-Form** an. "
-                "Antworten Sie **in der Sprache**, in der die Frage gestellt wurde – z. B. Arabisch, Englisch oder Französisch. "
-                "Nutzen Sie den bereitgestellten Kontext. "
-                "Falls Sie keine passende Information finden, sagen Sie das bitte höflich."
+                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Antworte bitte in der Sprache des Nutzers, aber verwende einen neutralen Ton (z. B. im Arabischen). "
+                "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
             )
 
-        # 🔍 Suche im Index (Azure Cognitive Search)
+        # 🔍 Azure Search verwenden
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -93,7 +97,7 @@ def chat():
         if len(context) > 1500:
             context = context[:1000]  # Performance-Optimierung
 
-        # 🤖 GPT-4o anfragen
+        # 💬 GPT-4o anfragen
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
