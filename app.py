@@ -5,15 +5,15 @@ from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 from deep_translator import GoogleTranslator
 from langdetect import detect
+import markdown2
 import os
 import time
 import traceback
-import markdown2
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
-# Umgebungsvariablen
+# 🔐 Umgebungsvariablen laden
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
@@ -21,13 +21,14 @@ AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# Azure Clients
+# 🔎 Azure Search Client
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
+# 🤖 GPT-Client
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
@@ -46,37 +47,42 @@ def chat():
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # Sprache erkennen
-        lang = detect(question)
+        # 🌍 Sprache erkennen
+        try:
+            detected_lang = detect(question)
+        except Exception:
+            detected_lang = "de"
 
-        # Tonwahl (du/sie)
+        # 🧠 Ton erkennen (Du / Sie / neutral)
         tone = "neutral"
-        if lang == "de":
-            if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
+        if detected_lang == "de":
+            if any(word in question.lower() for word in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
                 tone = "sie"
             else:
                 tone = "du"
 
+        # 🧑‍💼 Persona definieren
         if tone == "du":
             persona = (
                 "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und nur auf Basis des bereitgestellten Kontexts. "
-                "Wenn du etwas nicht weißt, sag das offen und freundlich."
+                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und nur basierend auf dem bereitgestellten Kontext. "
+                "Wenn du etwas nicht weißt, sei offen, direkt und freundlich."
             )
         elif tone == "sie":
             persona = (
                 "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in seiner Sprache und auf Basis des bereitgestellten Kontexts. "
+                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in der Sprache des Nutzers und nur basierend auf dem bereitgestellten Kontext. "
                 "Wenn Sie etwas nicht wissen, sagen Sie das bitte offen und höflich."
             )
         else:
             persona = (
-                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Antworte bitte in der Sprache des Nutzers, aber verwende einen neutralen Ton. "
-                "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
+                "Du bist LandKI – der mehrsprachige KI-Assistent von it-land.net. "
+                "Sprich neutral (z. B. bei Arabisch) und antworte in der Sprache des Nutzers. "
+                "Beziehe dich ausschließlich auf den bereitgestellten Kontext. "
+                "Wenn du etwas nicht weißt, sei professionell, ehrlich und hilfreich."
             )
 
-        # Azure Search
+        # 🔍 Azure Search
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -87,19 +93,21 @@ def chat():
                 break
 
         context = "\n\n".join(docs).strip()
-        if not context:
-            return jsonify({
-                "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
-            })
 
-        # Optional: Kontext übersetzen
-        if lang != "de":
+        # 🌐 Kontext übersetzen, wenn Sprache ≠ Deutsch
+        if context and detected_lang != "de":
             try:
-                context = GoogleTranslator(source="de", target=lang).translate(context)
+                translated = GoogleTranslator(source='de', target=detected_lang).translate(context)
+                context = translated
             except Exception as e:
-                print("⚠️ Übersetzung fehlgeschlagen:", str(e))
+                print("⚠️ Übersetzung fehlgeschlagen:", e)
 
-        # GPT-4o
+        # 📏 Länge begrenzen
+        if len(context) > 1500:
+            context = context[:1000]
+
+        # 🤖 GPT-4o Anfrage
+        start = time.time()
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
@@ -109,20 +117,14 @@ def chat():
             temperature=0.4,
             max_tokens=600
         )
+        duration = time.time() - start
+        print(f"✅ GPT-Antwortzeit: {duration:.2f} Sek.")
 
-        answer_raw = response.choices[0].message.content.strip()
-
-        # Optional: Antwort zurückübersetzen
-        if lang != "de":
-            try:
-                answer_raw = GoogleTranslator(source="de", target=lang).translate(answer_raw)
-            except Exception as e:
-                print("⚠️ Rückübersetzung fehlgeschlagen:", str(e))
-
-        answer_html = markdown2.markdown(answer_raw)
+        answer = response.choices[0].message.content.strip()
+        answer_html = markdown2.markdown(answer)
         return jsonify({"response": answer_html})
 
     except Exception as e:
         print("❌ Fehler im /chat-Endpoint:", str(e))
         traceback.print_exc()
-        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
+        return jsonify({"response": f"❌ Interner Fehler: {str(e)}"}), 500
