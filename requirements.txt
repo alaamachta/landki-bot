@@ -7,3 +7,4 @@ azure-core>=1.29.4
 azure-identity>=1.15.0
 markdown2>=2.4.12
 langdetect
+deep-translator
