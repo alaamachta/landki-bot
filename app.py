@@ -47,14 +47,15 @@ def detect_language(text):
     try:
         return detect(text)
     except Exception as e:
-        logger.warning(f"Spracherkennung fehlgeschlagen: {e}")
+        logger.warning(f"⚠️ Spracherkennung fehlgeschlagen: {e}")
         return "en"
 
 def translate(text, target_lang):
     try:
         return GoogleTranslator(source="auto", target=target_lang).translate(text)
     except Exception as e:
-        logger.warning(f"Übersetzung fehlgeschlagen: {e}")
+        logger.error("❌ Fehler bei Übersetzung:")
+        logger.error(traceback.format_exc())
         return text
 
 def search_azure(query):
@@ -76,7 +77,7 @@ def search_azure(query):
         logger.info(f"📄 {len(contents)} Ergebnisse aus Azure Search")
         return "\n---\n".join(contents)
     except Exception as e:
-        logger.error("❌ Fehler bei Azure Search")
+        logger.error("❌ Fehler bei Azure Search:")
         logger.error(traceback.format_exc())
         return "Fehler bei der Azure Search."
 
@@ -115,7 +116,7 @@ def chat():
 
 @app.route("/", methods=["GET"])
 def root():
-    return "LandKI – GPT-4o + Search + Übersetzung + Markdown (Debug-Version läuft!)"
+    return "LandKI – GPT-4o + Search + Translate (finale Version läuft!)"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
