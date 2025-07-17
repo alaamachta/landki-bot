@@ -1,18 +1,13 @@
 
+from flask import Flask, request, jsonify
 import os
-import openai
-import json
 import logging
 import traceback
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from deep_translator import GoogleTranslator
-from langdetect import detect
-from azure.search.documents import SearchClient
-from azure.core.credentials import AzureKeyCredential
+import requests
 from colorlog import ColoredFormatter
+from openai import AzureOpenAI
 
-# Farbiges Logging konfigurieren
+# Farb-Logging konfigurieren
 formatter = ColoredFormatter(
     "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
     log_colors={
@@ -20,7 +15,7 @@ formatter = ColoredFormatter(
         'INFO': 'green',
         'WARNING': 'yellow',
         'ERROR': 'red',
-        'CRITICAL': 'red,bg_white',
+        'CRITICAL': 'bold_red',
     }
 )
 handler = logging.StreamHandler()
@@ -30,80 +25,73 @@ logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
 app = Flask(__name__)
-CORS(app)
 
-# Umgebungsvariablen laden
-openai.api_key = os.getenv("OPENAI_API_KEY")
-openai_endpoint = os.getenv("OPENAI_ENDPOINT")
-openai_deployment_id = os.getenv("OPENAI_DEPLOYMENT_ID")
-search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
-search_key = os.getenv("AZURE_SEARCH_KEY")
-search_index = os.getenv("AZURE_SEARCH_INDEX")
+# Azure-Konfiguration
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 
-def detect_language(text):
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    api_version="2024-02-15-preview",
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
+)
+
+def search_azure(query):
     try:
-        return detect(text)
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": AZURE_SEARCH_KEY
+        }
+        url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
+        body = {
+            "search": query,
+            "top": 5
+        }
+        logger.info(f"🔎 Suche mit: {query}")
+        response = requests.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        results = response.json()
+        contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
+        logger.info(f"📄 {len(contents)} Ergebnisse aus Azure Search")
+        return "\n---\n".join(contents)
     except Exception as e:
-        logger.warning(f"Spracherkennung fehlgeschlagen: {e}")
-        return "en"
-
-def translate_text(text, target_lang):
-    try:
-        return GoogleTranslator(source="auto", target=target_lang).translate(text)
-    except Exception as e:
-        logger.warning(f"Übersetzung fehlgeschlagen: {e}")
-        return text
-
-def get_search_results(query):
-    try:
-        search_client = SearchClient(
-            endpoint=search_endpoint,
-            index_name=search_index,
-            credential=AzureKeyCredential(search_key)
-        )
-        results = search_client.search(query, top=5)
-        content = ""
-        for result in results:
-            content += result.get('content', '') + "\n"
-        return content
-    except Exception as e:
-        logger.error("Fehler bei Azure Search: " + str(e))
-        traceback.print_exc()
-        return "Fehler bei Azure Search."
+        logger.error("❌ Fehler bei Azure Search")
+        logger.error(traceback.format_exc())
+        return "Fehler bei der Azure Search."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        if not user_input:
-            return jsonify({"error": "Missing message"}), 400
+        logger.info(f"📨 Eingabe: {user_input}")
 
-        input_lang = detect_language(user_input)
-        user_input_en = translate_text(user_input, "en")
-        logger.info(f"Eingabe erkannt: '{user_input}' (Sprache: {input_lang})")
+        context = search_azure(user_input)
+        prompt = f"Nutze die folgenden Inhalte als Wissensbasis:\n{context}\n\nFrage: {user_input}\nAntwort:"
 
-        search_context = get_search_results(user_input_en)
-        prompt = f"Answer the following question using the context below.\n\nContext:\n{search_context}\n\nQuestion: {user_input_en}"
-
-        response = openai.ChatCompletion.create(
-            engine=openai_deployment_id,
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.5
+            temperature=0.2
         )
-        answer_en = response.choices[0].message["content"]
-        final_answer = translate_text(answer_en, input_lang)
 
-        logger.info(f"Antwort (EN): {answer_en}")
-        return jsonify({"reply": final_answer, "original_language": input_lang})
-
+        answer = response.choices[0].message.content
+        logger.info("✅ Antwort erfolgreich erstellt.")
+        return jsonify({"response": answer})
     except Exception as e:
-        error_details = traceback.format_exc()
-        logger.error(f"FEHLER: {e}\n{error_details}")
+        logger.error("❌ Fehler im /chat Endpunkt")
+        logger.error(traceback.format_exc())
         return jsonify({
-            "error": "Interner Fehler im Chat-Endpunkt.",
-            "details": str(e),
-            "trace": error_details
+            "error": "Fehler beim Verarbeiten der Anfrage.",
+            "details": str(e)
         }), 500
+
+@app.route("/", methods=["GET"])
+def root():
+    return "LandKI – Azure GPT-4o RAG Bot (Debug-Version läuft!)"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
