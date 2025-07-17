@@ -1,118 +1,109 @@
+
 import os
+import openai
+import json
+import logging
 import traceback
-import markdown2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from deep_translator import GoogleTranslator
+from langdetect import detect
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
-from openai import AzureOpenAI, RateLimitError
-from langdetect import detect as detect_lang
+from colorlog import ColoredFormatter
 
-print("🚀 Starte LandKI-Bot...")
+# Farbiges Logging konfigurieren
+formatter = ColoredFormatter(
+    "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'red,bg_white',
+    }
+)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger = logging.getLogger()
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
-# Umgebungsvariablen prüfen
-required_env = [
-    "AZURE_SEARCH_ENDPOINT", "AZURE_SEARCH_KEY", "AZURE_SEARCH_INDEX",
-    "AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"
-]
-
-for var in required_env:
-    value = os.getenv(var)
-    print(f"🔍 {var} = {'✅ OK' if value else '❌ FEHLT!'}")
-    if not value:
-        raise RuntimeError(f"❌ Umgebungsvariable {var} ist nicht gesetzt!")
-
-# Variablen einlesen
-AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
-AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-
-# Flask-App starten
 app = Flask(__name__)
-CORS(app, resources={r"/chat": {"origins": "*"}})
+CORS(app)
 
-# Azure Clients
-search_client = SearchClient(
-    endpoint=AZURE_SEARCH_ENDPOINT,
-    index_name=AZURE_SEARCH_INDEX,
-    credential=AzureKeyCredential(AZURE_SEARCH_KEY)
-)
+# Umgebungsvariablen laden
+openai.api_key = os.getenv("OPENAI_API_KEY")
+openai_endpoint = os.getenv("OPENAI_ENDPOINT")
+openai_deployment_id = os.getenv("OPENAI_DEPLOYMENT_ID")
+search_endpoint = os.getenv("AZURE_SEARCH_ENDPOINT")
+search_key = os.getenv("AZURE_SEARCH_KEY")
+search_index = os.getenv("AZURE_SEARCH_INDEX")
 
-client = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
-    api_version="2024-05-01-preview",
-    azure_endpoint=AZURE_OPENAI_ENDPOINT
-)
+def detect_language(text):
+    try:
+        return detect(text)
+    except Exception as e:
+        logger.warning(f"Spracherkennung fehlgeschlagen: {e}")
+        return "en"
 
-@app.route("/")
-def home():
-    return "✅ LandKI Bot läuft (Token optimiert + RateLimit-Schutz)"
+def translate_text(text, target_lang):
+    try:
+        return GoogleTranslator(source="auto", target=target_lang).translate(text)
+    except Exception as e:
+        logger.warning(f"Übersetzung fehlgeschlagen: {e}")
+        return text
+
+def get_search_results(query):
+    try:
+        search_client = SearchClient(
+            endpoint=search_endpoint,
+            index_name=search_index,
+            credential=AzureKeyCredential(search_key)
+        )
+        results = search_client.search(query, top=5)
+        content = ""
+        for result in results:
+            content += result.get('content', '') + "\n"
+        return content
+    except Exception as e:
+        logger.error("Fehler bei Azure Search: " + str(e))
+        traceback.print_exc()
+        return "Fehler bei Azure Search."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        data = request.get_json()
-        question = data.get("message", "").strip()
-        if not question:
-            return jsonify({"response": "❌ Keine Frage erhalten."}), 400
+        user_input = request.json.get("message", "")
+        if not user_input:
+            return jsonify({"error": "Missing message"}), 400
 
-        # Sprache erkennen
-        lang = detect_lang(question)
-        print(f"🌐 Sprache erkannt: {lang}")
+        input_lang = detect_language(user_input)
+        user_input_en = translate_text(user_input, "en")
+        logger.info(f"Eingabe erkannt: '{user_input}' (Sprache: {input_lang})")
 
-        # Azure Search abrufen
-        search_results = search_client.search(question)
-        docs = []
-        for result in search_results:
-            content = result.get("content", "") or result.get("text", "")
-            if content:
-                docs.append(content.strip())
-            if len(docs) >= 2:  # Weniger Kontext → weniger Token
-                break
+        search_context = get_search_results(user_input_en)
+        prompt = f"Answer the following question using the context below.\n\nContext:\n{search_context}\n\nQuestion: {user_input_en}"
 
-        context = "\n\n".join(docs).strip()
-        context = context[:2000]  # Max 2000 Zeichen
-        print("📚 Kontextlänge:", len(context))
-
-        if not context:
-            return jsonify({
-                "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
-            })
-
-        # System-Prompt
-        persona = (
-            "Du bist LandKI – ein freundlicher Assistent von it-land.net. "
-            "Antworte bitte in der Sprache des Nutzers, direkt und ehrlich."
+        response = openai.ChatCompletion.create(
+            engine=openai_deployment_id,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5
         )
+        answer_en = response.choices[0].message["content"]
+        final_answer = translate_text(answer_en, input_lang)
 
-        # GPT-Request mit RateLimitError-Schutz
-        try:
-            response = client.chat.completions.create(
-                model=AZURE_OPENAI_DEPLOYMENT,
-                messages=[
-                    {"role": "system", "content": f"{persona} Nutzersprache: {lang.upper()}."},
-                    {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
-                ],
-                temperature=0.4,
-                max_tokens=350  # Reduziert für geringeren Verbrauch
-            )
-        except RateLimitError:
-            print("⚠️ RateLimit erreicht. Antworte freundlich.")
-            return jsonify({
-                "response": "⏳ Ich habe gerade viele Anfragen gleichzeitig erhalten. Bitte warte kurz und versuche es gleich nochmal."
-            }), 429
-
-        answer_raw = response.choices[0].message.content.strip()
-        print("✅ GPT-Antwort empfangen.")
-
-        # Markdown → HTML
-        answer_html = markdown2.markdown(answer_raw)
-        return jsonify({"response": answer_html})
+        logger.info(f"Antwort (EN): {answer_en}")
+        return jsonify({"reply": final_answer, "original_language": input_lang})
 
     except Exception as e:
-        print("❌ Fehler im /chat-Endpoint:", str(e))
-        traceback.print_exc()
-        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
+        error_details = traceback.format_exc()
+        logger.error(f"FEHLER: {e}\n{error_details}")
+        return jsonify({
+            "error": "Interner Fehler im Chat-Endpunkt.",
+            "details": str(e),
+            "trace": error_details
+        }), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
