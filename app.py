@@ -1,24 +1,38 @@
+import os
+import traceback
+import markdown2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
-from deep_translator import GoogleTranslator
 from langdetect import detect as detect_lang
-import os
-import traceback
-import markdown2
 
-app = Flask(__name__)
-CORS(app, resources={r"/chat": {"origins": "*"}})
+print("🚀 Starte LandKI-Bot...")
 
-# Umgebungsvariablen
+# Umgebungsvariablen prüfen
+required_env = [
+    "AZURE_SEARCH_ENDPOINT", "AZURE_SEARCH_KEY", "AZURE_SEARCH_INDEX",
+    "AZURE_OPENAI_KEY", "AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_DEPLOYMENT"
+]
+
+for var in required_env:
+    value = os.getenv(var)
+    print(f"🔍 {var} = {'✅ OK' if value else '❌ FEHLT!'}")
+    if not value:
+        raise RuntimeError(f"❌ Umgebungsvariable {var} ist nicht gesetzt!")
+
+# Variablen einlesen
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+# Flask-App starten
+app = Flask(__name__)
+CORS(app, resources={r"/chat": {"origins": "*"}})
 
 # Azure Clients
 search_client = SearchClient(
@@ -35,7 +49,7 @@ client = AzureOpenAI(
 
 @app.route("/")
 def home():
-    return "✅ LandKI Bot mit GPT-4o & Azure Search ist aktiv!"
+    return "✅ LandKI Bot (TESTVERSION) läuft ohne Übersetzung!"
 
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -45,38 +59,11 @@ def chat():
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # Sprache der Eingabe erkennen
+        # Sprache erkennen
         lang = detect_lang(question)
+        print(f"🌐 Sprache erkannt: {lang}")
 
-        # Tonwahl
-        tone = "neutral"
-        if lang == "de":
-            if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
-                tone = "sie"
-            else:
-                tone = "du"
-
-        # Persona definieren
-        if tone == "du":
-            persona = (
-                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und nur auf Basis des bereitgestellten Kontexts. "
-                "Wenn du etwas nicht weißt, sag das offen und freundlich."
-            )
-        elif tone == "sie":
-            persona = (
-                "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in seiner Sprache und auf Basis des bereitgestellten Kontexts. "
-                "Wenn Sie etwas nicht wissen, sagen Sie das bitte offen und höflich."
-            )
-        else:
-            persona = (
-                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Antworte bitte in der Sprache des Nutzers, aber verwende einen neutralen Ton. "
-                "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
-            )
-
-        # Suche durchführen
+        # Azure Search
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -92,18 +79,17 @@ def chat():
                 "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
             })
 
-        # Kontext übersetzen (falls nötig)
-        if lang != "de":
-            try:
-                context = GoogleTranslator(source="de", target=lang).translate(context)
-            except Exception as e:
-                print("⚠️ Kontext-Übersetzung fehlgeschlagen:", str(e))
+        # Persona neutral (testweise)
+        persona = (
+            "Du bist LandKI – ein freundlicher Assistent von it-land.net. "
+            "Antworte bitte in der Sprache des Nutzers, direkt und ehrlich."
+        )
 
-        # GPT-4o Anfrage
+        # GPT-Aufruf
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": f"{persona} Die Nutzersprache ist: {lang.upper()}. Antworte bitte genau in dieser Sprache."},
+                {"role": "system", "content": f"{persona} Nutzersprache: {lang.upper()}."},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
@@ -111,18 +97,7 @@ def chat():
         )
 
         answer_raw = response.choices[0].message.content.strip()
-
-        # Sprache der Antwort erkennen
-        answer_lang = detect_lang(answer_raw)
-
-        # Nur zurückübersetzen, wenn GPT nicht in der richtigen Sprache geantwortet hat
-        if lang != answer_lang:
-            try:
-                answer_raw = GoogleTranslator(source=answer_lang, target=lang).translate(answer_raw)
-            except Exception as e:
-                print("⚠️ Rückübersetzung fehlgeschlagen:", str(e))
-                answer_raw = answer_raw  # Zeige Original, nicht leeren String
-
+        print("✅ GPT-Antwort empfangen.")
 
         # Markdown → HTML
         answer_html = markdown2.markdown(answer_raw)
