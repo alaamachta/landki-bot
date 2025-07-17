@@ -103,7 +103,7 @@ def chat():
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": f"{persona} Die Nutzersprache ist: {lang.upper()}."},
+                {"role": "system", "content": f"{persona} Die Nutzersprache ist: {lang.upper()}. Antworte bitte genau in dieser Sprache."},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
