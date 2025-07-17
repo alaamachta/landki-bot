@@ -1,1 +1,0 @@
-# LandKI Bot – coming soon
