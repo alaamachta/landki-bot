@@ -121,6 +121,8 @@ def chat():
                 answer_raw = GoogleTranslator(source=answer_lang, target=lang).translate(answer_raw)
             except Exception as e:
                 print("⚠️ Rückübersetzung fehlgeschlagen:", str(e))
+                answer_raw = answer_raw  # Zeige Original, nicht leeren String
+
 
         # Markdown → HTML
         answer_html = markdown2.markdown(answer_raw)
