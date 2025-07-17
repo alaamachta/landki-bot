@@ -6,6 +6,9 @@ import traceback
 import requests
 from colorlog import ColoredFormatter
 from openai import AzureOpenAI
+from deep_translator import GoogleTranslator
+from langdetect import detect
+import markdown2
 
 # Farb-Logging konfigurieren
 formatter = ColoredFormatter(
@@ -40,6 +43,20 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
+def detect_language(text):
+    try:
+        return detect(text)
+    except Exception as e:
+        logger.warning(f"Spracherkennung fehlgeschlagen: {e}")
+        return "en"
+
+def translate(text, target_lang):
+    try:
+        return GoogleTranslator(source="auto", target=target_lang).translate(text)
+    except Exception as e:
+        logger.warning(f"Übersetzung fehlgeschlagen: {e}")
+        return text
+
 def search_azure(query):
     try:
         headers = {
@@ -67,10 +84,12 @@ def search_azure(query):
 def chat():
     try:
         user_input = request.json.get("message", "")
-        logger.info(f"📨 Eingabe: {user_input}")
+        detected_lang = detect_language(user_input)
+        translated_input = translate(user_input, "en")
+        logger.info(f"📨 Eingabe: {user_input} → Übersetzt: {translated_input} (Sprache: {detected_lang})")
 
-        context = search_azure(user_input)
-        prompt = f"Nutze die folgenden Inhalte als Wissensbasis:\n{context}\n\nFrage: {user_input}\nAntwort:"
+        context = search_azure(translated_input)
+        prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {translated_input}\nAnswer:"
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -78,9 +97,14 @@ def chat():
             temperature=0.2
         )
 
-        answer = response.choices[0].message.content
+        answer_en = response.choices[0].message.content
+        answer = translate(answer_en, detected_lang)
         logger.info("✅ Antwort erfolgreich erstellt.")
-        return jsonify({"response": answer})
+        return jsonify({
+            "reply": answer,
+            "reply_html": markdown2.markdown(answer),
+            "language": detected_lang
+        })
     except Exception as e:
         logger.error("❌ Fehler im /chat Endpunkt")
         logger.error(traceback.format_exc())
@@ -91,7 +115,7 @@ def chat():
 
 @app.route("/", methods=["GET"])
 def root():
-    return "LandKI – Azure GPT-4o RAG Bot (Debug-Version läuft!)"
+    return "LandKI – GPT-4o + Search + Übersetzung + Markdown (Debug-Version läuft!)"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
