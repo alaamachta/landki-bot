@@ -79,17 +79,32 @@ def search_azure(query):
 def chat():
     try:
         user_input = request.json.get("message", "")
+        logger.info(f"👤 Eingabe vom User: {user_input}")
+
         lang = detect_language(user_input)
+        logger.info(f"🌐 Erkannte Sprache: {lang}")
+
         translated_input = translate(user_input, "en")
+        logger.info(f"📝 Übersetzt (→ en): {translated_input}")
+
         context = search_azure(translated_input)
+        logger.info(f"📚 Kontext-Zeichen (ersten 300): {context[:300]}")
+
         prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {translated_input}\nAnswer:"
+        logger.info("📤 Anfrage an GPT wird gesendet…")
+
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2
         )
+
         answer_en = response.choices[0].message.content
+        logger.info(f"✅ Antwort erhalten (en): {answer_en[:200]}")
+
         answer = translate(answer_en, lang)
+        logger.info(f"🌍 Zurückübersetzt (→ {lang}): {answer[:200]}")
+
         return jsonify({
             "reply": answer,
             "reply_html": markdown2.markdown(answer),
