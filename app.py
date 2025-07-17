@@ -1,119 +1,134 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
-import openai
-import httpx
-from azure.search.documents import SearchClient
-from azure.core.credentials import AzureKeyCredential
-from langdetect import detect
-from deep_translator import MyMemoryTranslator
 import logging
-import colorlog
+import traceback
+import requests
+from colorlog import ColoredFormatter
+from openai import AzureOpenAI
+from deep_translator import MyMemoryTranslator
+from langdetect import detect
+import markdown2
 
-# Logging konfigurieren
-handler = colorlog.StreamHandler()
-handler.setFormatter(colorlog.ColoredFormatter('%(log_color)s[%(levelname)s] %(message)s'))
-logger = colorlog.getLogger()
+# === Logging Setup ===
+formatter = ColoredFormatter(
+    "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
+    log_colors={
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'bold_red',
+    }
+)
+handler = logging.StreamHandler()
+handler.setFormatter(formatter)
+logger = logging.getLogger()
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# Flask Setup
+# === Flask App ===
 app = Flask(__name__)
-CORS(app)
 
-# Umgebungsvariablen aus Azure
-openai.api_key = os.environ["AZURE_OPENAI_KEY"]
-openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]
-openai.api_type = "azure"
-openai.api_version = os.environ.get("OPENAI_API_VERSION", "2024-05-01-preview")
-deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
+# === ENV Variablen laden ===
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
 
-search_endpoint = os.environ["AZURE_SEARCH_ENDPOINT"]
-search_key = os.environ["AZURE_SEARCH_KEY"]
-search_index = os.environ["AZURE_SEARCH_INDEX"]
-
-# Azure Cognitive Search Client
-search_client = SearchClient(
-    endpoint=search_endpoint,
-    index_name=search_index,
-    credential=AzureKeyCredential(search_key),
+# === OpenAI Client ===
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_KEY,
+    api_version=OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
-# Funktion: Sprache erkennen
+# === Sprachübersetzung vorbereiten ===
+lang_map = {
+    "de": "german", "en": "english", "fr": "french", "it": "italian", "es": "spanish",
+    "pt": "portuguese", "tr": "turkish", "ar": "arabic", "ru": "russian", "nl": "dutch"
+}
+
 def detect_language(text):
     try:
         return detect(text)
-    except Exception:
-        return "unknown"
+    except Exception as e:
+        logger.warning(f"⚠️ Sprache konnte nicht erkannt werden: {e}")
+        return "en"
 
-# Funktion: Übersetzen (MyMemory)
-def translate(text, source, target):
+def translate(text, target_lang):
     try:
-        translated = MyMemoryTranslator(source=source, target=target).translate(text)
+        lang_code = lang_map.get(target_lang, "english")
+        translated = MyMemoryTranslator(source="auto", target=lang_code).translate(text)
         return translated
     except Exception as e:
-        logger.warning(f"Übersetzungsfehler: {e}")
-        return text  # Fallback = Originaltext
+        logger.warning(f"⚠️ Übersetzungsfehler: {e}")
+        return text
 
-# Funktion: Suche im Index
-def search_knowledge_base(query):
-    results = search_client.search(search_text=query, include_total_count=True)
-    docs = []
-    for result in results:
-        if "content" in result:
-            docs.append(result["content"])
-    return docs
-
-# Funktion: GPT-Aufruf mit RAG
-def ask_openai(question, docs):
-    content = "\n\n".join(docs[:5]) if docs else ""
-    messages = [
-        {"role": "system", "content": "Beantworte nur basierend auf dem Firmenwissen. Wenn du etwas nicht weißt, sag es ehrlich."},
-        {"role": "user", "content": f"Frage: {question}\n\nWissen:\n{content}"}
-    ]
+def search_azure(query):
     try:
-        response = openai.ChatCompletion.create(
-            engine=deployment,
-            messages=messages,
-            temperature=0.3,
-            max_tokens=1200
-        )
-        return response.choices[0].message.content.strip()
+        headers = {
+            "Content-Type": "application/json",
+            "api-key": AZURE_SEARCH_KEY,
+            "Accept": "application/json;odata.metadata=none"
+        }
+        url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
+        body = { "search": query, "top": 5 }
+
+        logger.info(f"🔍 Azure Search mit: {query}")
+        response = requests.post(url, headers=headers, json=body)
+        response.raise_for_status()
+        results = response.json()
+        contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
+        logger.info(f"📦 {len(contents)} Dokumente aus Index gefunden")
+        return "\n---\n".join(contents)
     except Exception as e:
-        logger.error(f"OpenAI-Fehler: {e}")
-        return "❌ Fehler beim Abrufen der Antwort. Bitte versuche es später erneut."
+        logger.error("❌ Fehler bei Azure Search:")
+        logger.error(traceback.format_exc())
+        return "Fehler bei der Azure Search."
 
-# Route: Test
-@app.route("/test")
-def test():
-    return "✅ Bot läuft!"
-
-# Route: Haupt-Chat
 @app.route("/chat", methods=["POST"])
 def chat():
-    data = request.get_json()
-    user_input = data.get("message", "")
-    if not user_input:
-        return jsonify({"response": "❌ Keine Eingabe erhalten."}), 400
+    try:
+        user_input = request.json.get("message", "")
+        logger.info(f"👤 Eingabe vom User: {user_input}")
 
-    lang = detect_language(user_input)
-    logger.info(f"Eingabe erkannt in Sprache: {lang}")
+        lang = detect_language(user_input)
+        logger.info(f"🌍 Erkannte Sprache: {lang}")
 
-    # Falls nicht Deutsch: nach Deutsch übersetzen
-    input_de = translate(user_input, source=lang, target="de") if lang != "de" else user_input
-    logger.info(f"Übersetzt (→DE): {input_de}")
+        translated_input = translate(user_input, "en")
+        logger.info(f"📝 Übersetzt (→EN): {translated_input}")
 
-    docs = search_knowledge_base(input_de)
-    logger.info(f"{len(docs)} Dokumente aus Index gefunden")
+        context = search_azure(translated_input)
+        logger.info(f"📚 Kontext geladen ({len(context)} Zeichen)")
 
-    response_de = ask_openai(input_de, docs)
+        prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {translated_input}\nAnswer:"
 
-    # Wenn Originalsprache nicht Deutsch → zurückübersetzen
-    response_final = translate(response_de, source="de", target=lang) if lang != "de" else response_de
-    logger.info(f"Antwort in {lang}: {response_final}")
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.2
+        )
 
-    return jsonify({"response": response_final})
+        answer_en = response.choices[0].message.content
+        logger.info(f"✅ Antwort (EN): {answer_en[:100]}...")
 
-# App Start
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+        answer = translate(answer_en, lang)
+        logger.info(f"🔁 Antwort zurückübersetzt ({lang}): {answer[:100]}...")
+
+        return jsonify({
+            "reply": answer,
+            "reply_html": markdown2.markdown(answer),
+            "language": lang
+        })
+
+    except Exception as e:
+        logger.error("❌ Fehler im Chat-Endpunkt:")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Fehler bei Verarbeitung", "details": str(e)}), 500
+
+@app.route("/")
+def root():
+    return "✅ LandKI läuft mit GPT-4o & Azure Search!"
