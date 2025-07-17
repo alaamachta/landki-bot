@@ -4,16 +4,15 @@ from azure.search.documents import SearchClient
 from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 from deep_translator import GoogleTranslator
-from langdetect import detect
-import markdown2
+from langdetect import detect as detect_lang
 import os
-import time
 import traceback
+import markdown2
 
 app = Flask(__name__)
 CORS(app, resources={r"/chat": {"origins": "*"}})
 
-# 🔐 Umgebungsvariablen laden
+# Umgebungsvariablen
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
@@ -21,14 +20,13 @@ AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 
-# 🔎 Azure Search Client
+# Azure Clients
 search_client = SearchClient(
     endpoint=AZURE_SEARCH_ENDPOINT,
     index_name=AZURE_SEARCH_INDEX,
     credential=AzureKeyCredential(AZURE_SEARCH_KEY)
 )
 
-# 🤖 GPT-Client
 client = AzureOpenAI(
     api_key=AZURE_OPENAI_KEY,
     api_version="2024-05-01-preview",
@@ -47,42 +45,38 @@ def chat():
         if not question:
             return jsonify({"response": "❌ Keine Frage erhalten."}), 400
 
-        # 🌍 Sprache erkennen
-        try:
-            detected_lang = detect(question)
-        except Exception:
-            detected_lang = "de"
+        # Sprache der Eingabe erkennen
+        lang = detect_lang(question)
 
-        # 🧠 Ton erkennen (Du / Sie / neutral)
+        # Tonwahl
         tone = "neutral"
-        if detected_lang == "de":
-            if any(word in question.lower() for word in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
+        if lang == "de":
+            if any(phrase in question.lower() for phrase in [" sie ", "ihnen", "ihr unternehmen", "was bieten sie", "kann ich sie"]):
                 tone = "sie"
             else:
                 tone = "du"
 
-        # 🧑‍💼 Persona definieren
+        # Persona definieren
         if tone == "du":
             persona = (
                 "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und nur basierend auf dem bereitgestellten Kontext. "
-                "Wenn du etwas nicht weißt, sei offen, direkt und freundlich."
+                "Sprich den Nutzer in der Du-Form an. Antworte in seiner Sprache und nur auf Basis des bereitgestellten Kontexts. "
+                "Wenn du etwas nicht weißt, sag das offen und freundlich."
             )
         elif tone == "sie":
             persona = (
                 "Sie sind LandKI – der freundliche KI-Assistent von it-land.net. "
-                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in der Sprache des Nutzers und nur basierend auf dem bereitgestellten Kontext. "
+                "Sprechen Sie den Nutzer in der Sie-Form an. Antworten Sie in seiner Sprache und auf Basis des bereitgestellten Kontexts. "
                 "Wenn Sie etwas nicht wissen, sagen Sie das bitte offen und höflich."
             )
         else:
             persona = (
-                "Du bist LandKI – der mehrsprachige KI-Assistent von it-land.net. "
-                "Sprich neutral (z. B. bei Arabisch) und antworte in der Sprache des Nutzers. "
-                "Beziehe dich ausschließlich auf den bereitgestellten Kontext. "
-                "Wenn du etwas nicht weißt, sei professionell, ehrlich und hilfreich."
+                "Du bist LandKI – der freundliche KI-Assistent von it-land.net. "
+                "Antworte bitte in der Sprache des Nutzers, aber verwende einen neutralen Ton. "
+                "Antworte professionell, freundlich und direkt. Wenn du etwas nicht weißt, sag das offen."
             )
 
-        # 🔍 Azure Search
+        # Suche durchführen
         search_results = search_client.search(question)
         docs = []
         for result in search_results:
@@ -93,38 +87,46 @@ def chat():
                 break
 
         context = "\n\n".join(docs).strip()
+        if not context:
+            return jsonify({
+                "response": "Ich habe dazu leider keine passenden Informationen gefunden. Frag mich gerne etwas zu unseren Leistungen oder zur Website!"
+            })
 
-        # 🌐 Kontext übersetzen, wenn Sprache ≠ Deutsch
-        if context and detected_lang != "de":
+        # Kontext übersetzen (falls nötig)
+        if lang != "de":
             try:
-                translated = GoogleTranslator(source='de', target=detected_lang).translate(context)
-                context = translated
+                context = GoogleTranslator(source="de", target=lang).translate(context)
             except Exception as e:
-                print("⚠️ Übersetzung fehlgeschlagen:", e)
+                print("⚠️ Kontext-Übersetzung fehlgeschlagen:", str(e))
 
-        # 📏 Länge begrenzen
-        if len(context) > 1500:
-            context = context[:1000]
-
-        # 🤖 GPT-4o Anfrage
-        start = time.time()
+        # GPT-4o Anfrage
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": persona},
+                {"role": "system", "content": f"{persona} Die Nutzersprache ist: {lang.upper()}."},
                 {"role": "user", "content": f"Kontext:\n{context}\n\nFrage:\n{question}"}
             ],
             temperature=0.4,
             max_tokens=600
         )
-        duration = time.time() - start
-        print(f"✅ GPT-Antwortzeit: {duration:.2f} Sek.")
 
-        answer = response.choices[0].message.content.strip()
-        answer_html = markdown2.markdown(answer)
+        answer_raw = response.choices[0].message.content.strip()
+
+        # Sprache der Antwort erkennen
+        answer_lang = detect_lang(answer_raw)
+
+        # Nur zurückübersetzen, wenn GPT nicht in der richtigen Sprache geantwortet hat
+        if lang != answer_lang:
+            try:
+                answer_raw = GoogleTranslator(source=answer_lang, target=lang).translate(answer_raw)
+            except Exception as e:
+                print("⚠️ Rückübersetzung fehlgeschlagen:", str(e))
+
+        # Markdown → HTML
+        answer_html = markdown2.markdown(answer_raw)
         return jsonify({"response": answer_html})
 
     except Exception as e:
         print("❌ Fehler im /chat-Endpoint:", str(e))
         traceback.print_exc()
-        return jsonify({"response": f"❌ Interner Fehler: {str(e)}"}), 500
+        return jsonify({"response": "❌ Interner Fehler: " + str(e)}), 500
