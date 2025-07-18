@@ -47,7 +47,7 @@ MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
 MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")  # Azure-URL
-MS_SCOPES = ["Calendars.Read"]
+MS_SCOPES = ["Calendars.Read", "Calendars.ReadWrite"]
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 app.secret_key = os.getenv("SECRET_KEY")
 
