@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
 import logging
 import traceback
@@ -29,7 +28,6 @@ logger.setLevel(logging.INFO)
 
 # === Flask App ===
 app = Flask(__name__)
-CORS(app)  # ⚠️ Wichtig für WordPress-Frontend-Zugriff
 
 # === ENV Variablen laden ===
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
@@ -47,7 +45,6 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
-# === Sprachübersetzung vorbereiten ===
 lang_map = {
     "de": "german", "en": "english", "fr": "french", "it": "italian", "es": "spanish",
     "pt": "portuguese", "tr": "turkish", "ar": "arabic", "ru": "russian", "nl": "dutch"
@@ -56,20 +53,15 @@ lang_map = {
 def detect_language(text):
     try:
         return detect(text)
-    except Exception as e:
-        logger.warning(f"⚠️ Sprache konnte nicht erkannt werden: {e}")
+    except:
         return "en"
 
 def translate(text, target_lang):
     try:
-        source_lang = detect(text)
-        source_code = lang_map.get(source_lang, "english")
-        target_code = lang_map.get(target_lang, "english")
-        return MyMemoryTranslator(source=source_code, target=target_code).translate(text)
-    except Exception as e:
-        logger.warning(f"⚠️ Übersetzungsfehler: {e}")
+        lang_code = lang_map.get(target_lang, "english")
+        return MyMemoryTranslator(source="auto", target=lang_code).translate(text)
+    except:
         return text
-
 
 def search_azure(query):
     try:
@@ -79,36 +71,32 @@ def search_azure(query):
             "Accept": "application/json;odata.metadata=none"
         }
         url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
-        body = { "search": query, "top": 1 } # 🟡 Nur 1 Dokument laden
+        body = { "search": query, "top": 1 }
 
-        logger.info(f"🔍 Azure Search mit: {query}")
         response = requests.post(url, headers=headers, json=body)
         response.raise_for_status()
         results = response.json()
         contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        logger.info(f"📦 {len(contents)} Dokumente aus Index gefunden")
         return "\n---\n".join(contents)
-    except Exception as e:
-        logger.error("❌ Fehler bei Azure Search:")
-        logger.error(traceback.format_exc())
-        return "Fehler bei der Azure Search."
+    except:
+        return ""
+
+def is_smalltalk(msg):
+    patterns = ["hallo", "hi", "wie geht", "servus", "moin", "wer bist", "danke", "ciao", "tschüss"]
+    return any(p in msg.lower() for p in patterns)
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        logger.info(f"👤 Eingabe vom User: {user_input}")
-
         lang = detect_language(user_input)
-        logger.info(f"🌍 Erkannte Sprache: {lang}")
-
         translated_input = translate(user_input, "en")
-        logger.info(f"📝 Übersetzt (→EN): {translated_input}")
 
-        context = search_azure(translated_input)
-        logger.info(f"📚 Kontext geladen ({len(context)} Zeichen)")
-
-        prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {translated_input}\nAnswer:"
+        if is_smalltalk(user_input):
+            prompt = translated_input
+        else:
+            context = search_azure(translated_input)
+            prompt = f"{context}\n\nQ: {translated_input}\nA:"
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -117,22 +105,17 @@ def chat():
         )
 
         answer_en = response.choices[0].message.content
-        logger.info(f"✅ Antwort (EN): {answer_en[:100]}...")
-
         answer = translate(answer_en, lang)
-        logger.info(f"🔁 Antwort zurückübersetzt ({lang}): {answer[:100]}...")
 
         return jsonify({
-            "response": answer,  # ✅ Key angepasst fürs Frontend
+            "reply": answer,
             "reply_html": markdown2.markdown(answer),
             "language": lang
         })
-
     except Exception as e:
-        logger.error("❌ Fehler im Chat-Endpunkt:")
         logger.error(traceback.format_exc())
         return jsonify({"error": "Fehler bei Verarbeitung", "details": str(e)}), 500
 
 @app.route("/")
 def root():
-    return "✅ LandKI läuft mit GPT-4o & Azure Search!"
+    return "✅ LandKI optimierte Version läuft!"
