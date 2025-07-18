@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
 import logging
 import traceback
@@ -28,6 +29,7 @@ logger.setLevel(logging.INFO)
 
 # === Flask App ===
 app = Flask(__name__)
+CORS(app)  # ⚠️ Wichtig für WordPress-Frontend-Zugriff
 
 # === ENV Variablen laden ===
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
@@ -61,8 +63,7 @@ def detect_language(text):
 def translate(text, target_lang):
     try:
         lang_code = lang_map.get(target_lang, "english")
-        translated = MyMemoryTranslator(source="auto", target=lang_code).translate(text)
-        return translated
+        return MyMemoryTranslator(source="auto", target=lang_code).translate(text)
     except Exception as e:
         logger.warning(f"⚠️ Übersetzungsfehler: {e}")
         return text
@@ -119,7 +120,7 @@ def chat():
         logger.info(f"🔁 Antwort zurückübersetzt ({lang}): {answer[:100]}...")
 
         return jsonify({
-            "reply": answer,
+            "response": answer,  # ✅ Key angepasst fürs Frontend
             "reply_html": markdown2.markdown(answer),
             "language": lang
         })
