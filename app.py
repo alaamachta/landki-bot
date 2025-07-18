@@ -1,12 +1,17 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
+from flask import redirect, session, url_for
 import os
 import logging
 import traceback
 import requests
 from colorlog import ColoredFormatter
 from openai import AzureOpenAI
+from urllib.parse import urlencode
 import markdown2
+import msal
+
+
 
 # === Logging Setup ===
 formatter = ColoredFormatter(
@@ -36,7 +41,32 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-07-18")
+# 🔐 ENV Variablen für MS OAuth
+MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
+MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+MS_TENANT_ID = os.getenv("MS_TENANT_ID")
+MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")  # Azure-URL
+MS_SCOPES = ["Calendars.Read"]
+MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+app.secret_key = os.getenv("SECRET_KEY")
+
+
+# === ENV-Check-Tool ===
+def check_env_vars(required_vars):
+    all_ok = True
+    for var in required_vars:
+        value = os.getenv(var)
+        if value:
+            logger.info(f"[ENV] ✅ {var} gesetzt")
+        else:
+            logger.error(f"[ENV] ❌ {var} fehlt!")
+            all_ok = False
+
+    if not all_ok:
+        logger.critical("🚫 Eine oder mehrere benötigte Umgebungsvariablen fehlen. Bot wird gestoppt.")
+        exit(1)
+
 
 # === OpenAI Client ===
 client = AzureOpenAI(
@@ -103,3 +133,51 @@ def chat():
 @app.route("/")
 def root():
     return "✅ LandKI ohne Übersetzungslogik läuft!"
+
+# 🧠 Funktion: MSAL OAuth App initialisieren
+def _build_msal_app():
+    return msal.ConfidentialClientApplication(
+        MS_CLIENT_ID,
+        authority=MS_AUTHORITY,
+        client_credential=MS_CLIENT_SECRET
+    )
+
+# 🧠 Funktion: Zugriffstoken holen
+def _get_token_by_code(auth_code):
+    return _build_msal_app().acquire_token_by_authorization_code(
+        auth_code,
+        scopes=MS_SCOPES,
+        redirect_uri=MS_REDIRECT_URI
+    )
+
+# === OAuth Startpunkt: Login anstoßen ===
+@app.route("/calendar")
+def calendar_login():
+    session["state"] = os.urandom(24).hex()
+    auth_url = _build_msal_app().get_authorization_request_url(
+        scopes=MS_SCOPES,
+        state=session["state"],
+        redirect_uri=MS_REDIRECT_URI
+    )
+    return redirect(auth_url)
+
+# === OAuth Callback: Token empfangen, Kalender laden ===
+@app.route("/callback")
+def calendar_callback():
+    if request.args.get('state') != session.get('state'):
+        return "❌ Sicherheitsüberprüfung fehlgeschlagen", 400
+
+    code = request.args.get('code')
+    token_result = _get_token_by_code(code)
+
+    if "access_token" not in token_result:
+        return jsonify({"error": "Token konnte nicht geholt werden", "details": token_result.get("error_description")}), 500
+
+    access_token = token_result["access_token"]
+    headers = {'Authorization': f'Bearer {access_token}'}
+    calendar_response = requests.get("https://graph.microsoft.com/v1.0/me/calendar/events", headers=headers)
+
+    if calendar_response.status_code != 200:
+        return jsonify({"error": "Kalenderdaten konnten nicht geladen werden", "details": calendar_response.text}), 500
+
+    return jsonify(calendar_response.json())
