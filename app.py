@@ -6,8 +6,6 @@ import traceback
 import requests
 from colorlog import ColoredFormatter
 from openai import AzureOpenAI
-from deep_translator import MyMemoryTranslator
-from langdetect import detect
 import markdown2
 
 # === Logging Setup ===
@@ -47,26 +45,7 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
-lang_map = {
-    "de": "german", "en": "english", "fr": "french", "it": "italian", "es": "spanish",
-    "pt": "portuguese", "tr": "turkish", "ar": "arabic", "ru": "russian", "nl": "dutch"
-}
-
-def detect_language(text):
-    try:
-        return detect(text)
-    except:
-        return "en"
-
-def translate(text, target_lang):
-    try:
-        source_lang = detect(text)  # z. B. "de"
-        target_code = lang_map.get(target_lang, "english")  # z. B. "english"
-        return MyMemoryTranslator(source=source_lang, target=target_code).translate(text)
-    except Exception as e:
-        logger.warning(f"⚠️ Übersetzungsfehler: {e}")
-        return text
-
+# === Azure Search ===
 def search_azure(query):
     try:
         headers = {
@@ -75,56 +54,52 @@ def search_azure(query):
             "Accept": "application/json;odata.metadata=none"
         }
         url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
-        body = { "search": query, "top": 1 }
+        body = { "search": query, "top": 5 }
 
+        logger.info(f"🔍 Azure Search mit: {query}")
         response = requests.post(url, headers=headers, json=body)
         response.raise_for_status()
         results = response.json()
         contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
+        logger.info(f"📦 {len(contents)} Dokumente aus Index gefunden")
         return "\n---\n".join(contents)
-    except:
-        return ""
+    except Exception as e:
+        logger.error("❌ Fehler bei Azure Search:")
+        logger.error(traceback.format_exc())
+        return "Fehler bei der Azure Search."
 
-def is_smalltalk(msg):
-    patterns = ["hallo", "hi", "wie geht", "servus", "moin", "wer bist", "danke", "ciao", "tschüss"]
-    return any(p in msg.lower() for p in patterns)
-
+# === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        lang = detect_language(user_input)
-        translated_input = translate(user_input, "en")
+        logger.info(f"👤 Eingabe vom User: {user_input}")
 
-        if is_smalltalk(user_input):
-            prompt = translated_input
-        else:
-            context = search_azure(translated_input)
-            prompt = f"{context}\n\nQ: {translated_input}\nA:"
-            max_context_chars = 6000
-            if len(context) > max_context_chars:
-                context = context[:max_context_chars]
-                logger.info("✂️ Kontext wurde gekürzt auf 6000 Zeichen")
+        context = search_azure(user_input)
+        logger.info(f"📚 Kontext geladen ({len(context)} Zeichen)")
+
+        prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {user_input}\nAnswer:"
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1, # Weniger kreative, klarere, kürzere Antworten
-            max_tokens=50  # max_tokens=300 bedeutet, dass GPT-4o maximal ca. 200–250 Wörter zurückgeben darf.
+            temperature=0.2  # Geringe Kreativität, präzisere Antworten
         )
 
-        answer_en = response.choices[0].message.content
-        answer = translate(answer_en, lang)
+        answer = response.choices[0].message.content
+        logger.info(f"✅ Antwort: {answer[:100]}...")
 
         return jsonify({
-            "reply": answer,
-            "reply_html": markdown2.markdown(answer),
-            "language": lang
+            "response": answer,
+            "reply_html": markdown2.markdown(answer)
         })
+
     except Exception as e:
+        logger.error("❌ Fehler im Chat-Endpunkt:")
         logger.error(traceback.format_exc())
         return jsonify({"error": "Fehler bei Verarbeitung", "details": str(e)}), 500
 
+# === Health Check ===
 @app.route("/")
 def root():
-    return "✅ LandKI optimierte Version läuft!"
+    return "✅ LandKI ohne Übersetzungslogik läuft!"
