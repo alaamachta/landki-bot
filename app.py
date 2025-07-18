@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
 import logging
 import traceback
@@ -28,6 +29,7 @@ logger.setLevel(logging.INFO)
 
 # === Flask App ===
 app = Flask(__name__)
+CORS(app)  # ⚠️ Wichtig für WordPress-Frontend-Zugriff
 
 # === ENV Variablen laden ===
 AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
