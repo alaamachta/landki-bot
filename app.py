@@ -79,7 +79,7 @@ def search_azure(query):
             "Accept": "application/json;odata.metadata=none"
         }
         url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
-        body = { "search": query, "top": 5 }
+        body = { "search": query, "top": 1 } # 🟡 Nur 1 Dokument laden
 
         logger.info(f"🔍 Azure Search mit: {query}")
         response = requests.post(url, headers=headers, json=body)
