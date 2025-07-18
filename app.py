@@ -62,11 +62,14 @@ def detect_language(text):
 
 def translate(text, target_lang):
     try:
-        lang_code = lang_map.get(target_lang, "english")
-        return MyMemoryTranslator(source="auto", target=lang_code).translate(text)
+        source_lang = detect(text)
+        source_code = lang_map.get(source_lang, "english")
+        target_code = lang_map.get(target_lang, "english")
+        return MyMemoryTranslator(source=source_code, target=target_code).translate(text)
     except Exception as e:
         logger.warning(f"⚠️ Übersetzungsfehler: {e}")
         return text
+
 
 def search_azure(query):
     try:
