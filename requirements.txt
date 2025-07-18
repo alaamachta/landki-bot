@@ -10,6 +10,4 @@ azure-core==1.29.4
 azure-identity==1.15.0
 
 markdown2==2.4.12
-langdetect
-deep-translator==1.11.4
 colorlog>=6.7.0
