@@ -99,11 +99,16 @@ def chat():
         else:
             context = search_azure(translated_input)
             prompt = f"{context}\n\nQ: {translated_input}\nA:"
+            max_context_chars = 6000
+            if len(context) > max_context_chars:
+                context = context[:max_context_chars]
+                logger.info("✂️ Kontext wurde gekürzt auf 6000 Zeichen")
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
+            temperature=0.1, # Weniger kreative, klarere, kürzere Antworten
+            max_tokens=50  # max_tokens=300 bedeutet, dass GPT-4o maximal ca. 200–250 Wörter zurückgeben darf.
         )
 
         answer_en = response.choices[0].message.content
