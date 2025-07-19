@@ -29,7 +29,7 @@ MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.environ.get("MS_TENANT_ID")
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-MS_SCOPES = ["Calendars.Read", "offline_access", "User.Read", "openid", "profile", "email"]
+MS_SCOPES = ["User.Read", "Calendars.Read"]
 MS_REDIRECT_URI = os.environ.get("MS_REDIRECT_URI")
 
 OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
@@ -50,7 +50,7 @@ def _build_msal_app(cache=None):
 def _get_token_by_code(code):
     result = _build_msal_app().acquire_token_by_authorization_code(
         code,
-        scopes=MS_SCOPES,
+        scopes=["Calendars.Read", "offline_access", "User.Read"]
         redirect_uri=MS_REDIRECT_URI
     )
     return result
