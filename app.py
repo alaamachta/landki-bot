@@ -92,7 +92,7 @@ def get_free_times():
         "endDateTime": end
     }
 
-    url = "https://graph.microsoft.com/v1.0/me/calendarview"
+    url = "https://graph.microsoft.com/v1.0/me/events"
     try:
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
