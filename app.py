@@ -92,7 +92,12 @@ def get_free_times():
     }
 
 
-    url = "https://graph.microsoft.com/v1.0/me/events"
+    url = "https://graph.microsoft.com/v1.0/me/calendar/events"
+    params = {
+        "$filter": f"start/dateTime ge '{now}' and end/dateTime le '{end}'",
+        "$orderby": "start/dateTime",
+    }
+
     try:
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
