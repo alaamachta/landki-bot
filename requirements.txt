@@ -1,26 +1,29 @@
 # === Flask & Webserver
 flask>=2.2.0
 flask-cors>=3.0.10
-gunicorn>=20.1.0
 Flask-Session>=0.4.0
+gunicorn>=20.1.0
 
 # === OpenAI & Azure
-openai==1.10.0
+openai>=1.30.0             # GPT-4o läuft stabil ab 1.30.x
 azure-core==1.29.4
 azure-search-documents==11.4.0
 azure-identity==1.15.0
 
 # === Microsoft Auth (OAuth)
-msal>=1.24.0
+msal>=1.24.0               # du nutzt Login mit ConfidentialClientApplication
 
 # === HTTP / Logging
-httpx==0.24.1
 requests>=2.31.0
+httpx==0.24.1
 colorlog>=6.7.0
 
 # === Zusatztools
-markdown2==2.4.12
 pytz>=2023.3
+markdown2==2.4.12
 
-# === Sonstiges (wenn nötig)
+# === Lokales ENV-Handling (optional)
+python-dotenv>=1.0.1
+
+# === Sicherheit & Netzwerk
 urllib3>=1.26.16
