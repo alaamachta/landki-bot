@@ -38,7 +38,7 @@ def _get_token_by_code(auth_code):
     app_msal = _build_msal_app()
     return app_msal.acquire_token_by_authorization_code(
         code=auth_code,
-        scopes=["User.Read", "Calendars.Read", "offline_access"],  # Hier ist offline_access erlaubt
+        scopes=["User.Read", "Calendars.Read"],  # Hier ist offline_access erlaubt
         redirect_uri=MS_REDIRECT_URI
     )
 
