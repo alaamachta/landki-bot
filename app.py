@@ -11,15 +11,15 @@ import requests
 # === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.getenv("SECRET_KEY")  # Beispiel: xXotgkvSMVQQJ55sKNRMf9
+app.secret_key = os.getenv("SECRET_KEY")  # z. B. xXotgkvSMVQQJ55sKNRMf9
 
 # === Microsoft Identity ===
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
-MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
+MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")  # z. B. https://dein-bot.azurewebsites.net/callback
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-MS_SCOPES = ["User.Read", "Calendars.Read"]  # ❗️Keine reservierten Scopes hier
+MS_SCOPES = ["User.Read", "Calendars.Read"]  # KEINE reservierten Scopes hier
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +42,7 @@ def _get_token_by_code(auth_code):
         redirect_uri=MS_REDIRECT_URI
     )
 
-# === Outlook Kalender Auth ===
+# === Kalender Auth ===
 @app.route("/calendar")
 def calendar_login():
     session["state"] = os.urandom(24).hex()
@@ -68,10 +68,11 @@ def calendar_callback():
 
     if "access_token" not in token_result:
         return jsonify({"error": "Token konnte nicht geholt werden", "details": token_result.get("error_description")}), 500
+
     session["access_token"] = token_result["access_token"]
     return redirect("/available-times")
 
-# === Kalenderlogik ===
+# === Kalenderabfrage ===
 @app.route("/available-times")
 def get_free_times():
     access_token = session.get("access_token")
@@ -94,19 +95,24 @@ def get_free_times():
     url = "https://graph.microsoft.com/v1.0/me/calendarview"
     try:
         response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
         events = response.json().get("value", [])
     except Exception as e:
         logger.error(f"[GRAPH] Fehler beim Abrufen des Kalenders: {e}")
+        logger.error(traceback.format_exc())
         return jsonify({"error": "Kalender konnte nicht geladen werden."}), 500
 
-    # Gebuchte Zeiten sammeln
+    # Gebuchte Zeiten
     booked_slots = []
     for event in events:
-        start = datetime.fromisoformat(event["start"]["dateTime"].replace("Z", "+00:00"))
-        end = datetime.fromisoformat(event["end"]["dateTime"].replace("Z", "+00:00"))
-        booked_slots.append((start, end))
+        try:
+            start = datetime.fromisoformat(event["start"]["dateTime"].replace("Z", "+00:00"))
+            end = datetime.fromisoformat(event["end"]["dateTime"].replace("Z", "+00:00"))
+            booked_slots.append((start, end))
+        except Exception as e:
+            logger.warning(f"[GRAPH] Ungültiges Event-Format: {event} – {e}")
 
-    # Freie Slots (1h) zwischen 08–18 Uhr suchen
+    # Freie Slots zwischen 08:00–18:00 Uhr in UTC
     tz = pytz.utc
     free_slots = []
     current = datetime.utcnow().replace(minute=0, second=0, microsecond=0, tzinfo=tz)
@@ -125,7 +131,7 @@ def get_free_times():
 
     return jsonify({"free_slots": free_slots})
 
-# === Test-Route ===
+# === Root-Check ===
 @app.route("/")
 def home():
-    return "LandKI Kalender-Integration läuft!"
+    return "✅ LandKI Kalender-Integration läuft!"
