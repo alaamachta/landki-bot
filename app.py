@@ -1,67 +1,48 @@
 import os
 import logging
 import traceback
-from datetime import datetime, timedelta
-
-from flask import Flask, jsonify, request, redirect, session
+from flask import Flask, request, jsonify, redirect, session
 from flask_cors import CORS
-from flask_session import Session
+from datetime import datetime, timedelta
+import pytz
 import msal
 import requests
 
-from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
-from openai import AzureOpenAI
-
-# === Setup ===
+# === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
+app.secret_key = os.getenv("SECRET_KEY")  # Beispiel: xXotgkvSMVQQJ55sKNRMf9
 
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev")
-app.config["SESSION_TYPE"] = "filesystem"
-Session(app)
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# === ENV Variablen ===
-MS_CLIENT_ID = os.environ.get("MS_CLIENT_ID")
-MS_CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
-MS_TENANT_ID = os.environ.get("MS_TENANT_ID")
+# === Microsoft Identity ===
+MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
+MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+MS_TENANT_ID = os.getenv("MS_TENANT_ID")
+MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")  # z. B. https://dein-bot.azurewebsites.net/callback
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-MS_SCOPES = ["User.Read", "Calendars.Read"]
-MS_REDIRECT_URI = os.environ.get("MS_REDIRECT_URI")
+MS_SCOPES = ["User.Read", "Calendars.Read"]  # ❗️WICHTIG: Keine reservierten Scopes hier
 
-OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-OPENAI_API_KEY = os.environ.get("AZURE_OPENAI_KEY")
-OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+# === Logging ===
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("app")
 
-SEARCH_ENDPOINT = os.environ.get("AZURE_SEARCH_ENDPOINT")
-SEARCH_KEY = os.environ.get("AZURE_SEARCH_KEY")
-SEARCH_INDEX = os.environ.get("AZURE_SEARCH_INDEX")
-
-# === Funktionen ===
+# === MSAL Setup ===
 def _build_msal_app(cache=None):
     return msal.ConfidentialClientApplication(
-        MS_CLIENT_ID, authority=MS_AUTHORITY,
-        client_credential=MS_CLIENT_SECRET, token_cache=cache
+        MS_CLIENT_ID,
+        client_credential=MS_CLIENT_SECRET,
+        authority=MS_AUTHORITY,
+        token_cache=cache,
     )
 
-def _get_token_by_code(code):
-    result = _build_msal_app().acquire_token_by_authorization_code(
-        code,
-        scopes=["Calendars.Read", "offline_access", "User.Read"]
+def _get_token_by_code(auth_code):
+    app_msal = _build_msal_app()
+    return app_msal.acquire_token_by_authorization_code(
+        code=auth_code,
+        scopes=["User.Read", "Calendars.Read", "offline_access"],  # Hier ist offline_access erlaubt
         redirect_uri=MS_REDIRECT_URI
     )
-    return result
 
-def _get_graph_headers():
-    return {
-        "Authorization": f"Bearer {session['access_token']}",
-        "Content-Type": "application/json"
-    }
-
-# === Routen ===
+# === Outlook Kalender Auth ===
 @app.route("/calendar")
 def calendar_login():
     session["state"] = os.urandom(24).hex()
@@ -74,10 +55,9 @@ def calendar_login():
 
 @app.route("/callback")
 def calendar_callback():
-    if request.args.get("state") != session.get("state"):
+    if request.args.get('state') != session.get('state'):
         return "State mismatch!", 400
-
-    code = request.args.get("code")
+    code = request.args.get('code')
     try:
         token_result = _get_token_by_code(code)
         logger.info(f"[MSAL] Token erhalten: {token_result}")
@@ -87,90 +67,65 @@ def calendar_callback():
         return "Fehler beim MSAL-Token holen", 500
 
     if "access_token" not in token_result:
-        return jsonify({
-            "error": "Token konnte nicht geholt werden",
-            "details": token_result.get("error_description")
-        }), 500
-
+        return jsonify({"error": "Token konnte nicht geholt werden", "details": token_result.get("error_description")}), 500
     session["access_token"] = token_result["access_token"]
     return redirect("/available-times")
 
+# === Kalenderlogik ===
 @app.route("/available-times")
-def available_times():
+def get_free_times():
+    access_token = session.get("access_token")
+    if not access_token:
+        return redirect("/calendar")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"
+    }
+
+    now = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    end = (datetime.utcnow() + timedelta(days=2)).replace(microsecond=0).isoformat() + "Z"
+
+    params = {
+        "startDateTime": now,
+        "endDateTime": end
+    }
+
+    url = "https://graph.microsoft.com/v1.0/me/calendarview"
     try:
-        now = datetime.utcnow()
-        start = now.isoformat() + "Z"
-        end = (now + timedelta(days=7)).isoformat() + "Z"
-        logger.info(f"[Graph] Hole Kalenderdaten von {start} bis {end}")
-
-        response = requests.get(
-            f"https://graph.microsoft.com/v1.0/me/calendarview?startDateTime={start}&endDateTime={end}",
-            headers=_get_graph_headers()
-        )
-        logger.info(f"[Graph] Status: {response.status_code}")
-        logger.info(f"[Graph] Response Body: {response.text}")
-
-        if response.status_code != 200:
-            logger.error("❌ Fehler beim Abrufen der Kalenderdaten.")
-            return jsonify({"error": "Kalenderzugriff fehlgeschlagen"}), 401
-
+        response = requests.get(url, headers=headers, params=params)
         events = response.json().get("value", [])
-        used_slots = [
-            (e["start"]["dateTime"], e["end"]["dateTime"]) for e in events
-        ]
-
-        free_slots = []
-        current = now.replace(hour=9, minute=0, second=0, microsecond=0)
-        end_day = now + timedelta(days=7)
-
-        while current < end_day:
-            slot_end = current + timedelta(hours=1)
-            if current.weekday() < 5:  # Mo–Fr
-                overlapping = any(
-                    current.isoformat() < end and slot_end.isoformat() > start
-                    for start, end in used_slots
-                )
-                if not overlapping:
-                    free_slots.append(current.strftime("%Y-%m-%d %H:%M"))
-            current += timedelta(hours=1)
-
-        return jsonify({"free_slots": free_slots})
-
     except Exception as e:
-        logger.error(f"❌ Fehler in /available-times: {str(e)}")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler beim Verarbeiten"}), 500
+        logger.error(f"[GRAPH] Fehler beim Abrufen des Kalenders: {e}")
+        return jsonify({"error": "Kalender konnte nicht geladen werden."}), 500
 
-@app.route("/ask", methods=["POST"])
-def ask():
-    data = request.get_json()
-    query = data.get("question", "")
-    if not query:
-        return jsonify({"error": "Keine Frage angegeben"}), 400
+    # Alle gebuchten Zeiten ermitteln
+    booked_slots = []
+    for event in events:
+        start = datetime.fromisoformat(event["start"]["dateTime"].replace("Z", "+00:00"))
+        end = datetime.fromisoformat(event["end"]["dateTime"].replace("Z", "+00:00"))
+        booked_slots.append((start, end))
 
-    search_client = SearchClient(
-        endpoint=SEARCH_ENDPOINT,
-        index_name=SEARCH_INDEX,
-        credential=SEARCH_KEY
-    )
-    results = search_client.search(query)
-    contents = "\n\n".join([doc["content"] for doc in results])
+    # Jetzt freie Slots generieren (1h-Blöcke zwischen 08–18 Uhr)
+    tz = pytz.utc
+    free_slots = []
+    current = datetime.utcnow().replace(minute=0, second=0, microsecond=0, tzinfo=tz)
+    end_time = current + timedelta(days=2)
 
-    client = AzureOpenAI(
-        azure_endpoint=OPENAI_ENDPOINT,
-        api_key=OPENAI_API_KEY,
-        api_version="2024-02-15-preview"
-    )
-    response = client.chat.completions.create(
-        model=OPENAI_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": "Antworte nur mit Inhalten von IT-Land. Wenn nicht vorhanden, sag das ehrlich."},
-            {"role": "user", "content": f"Frage: {query}\n\nKontext:\n{contents}"}
-        ],
-        temperature=0.3
-    )
-    return jsonify({"answer": response.choices[0].message.content})
+    while current < end_time:
+        start_slot = current
+        end_slot = current + timedelta(hours=1)
 
-# === Starten ===
-if __name__ == "__main__":
-    app.run(debug=True)
+        if 8 <= current.hour < 18:
+            conflict = any(bs <= start_slot < be or bs < end_slot <= be for bs, be in booked_slots)
+            if not conflict:
+                free_slots.append(start_slot.isoformat())
+
+        current += timedelta(hours=1)
+
+    return jsonify({"free_slots": free_slots})
+
+# === Root Test ===
+@app.route("/")
+def home():
+    return "LandKI Kalender-Integration läuft!"
