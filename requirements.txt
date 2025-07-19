@@ -1,15 +1,22 @@
+# === Flask & Webserver
 flask>=2.2.0
 flask-cors>=3.0.10
 gunicorn>=20.1.0
 
+# === OpenAI & Azure
 openai==1.10.0
-httpx==0.24.1
-
-azure-search-documents==11.4.0
 azure-core==1.29.4
+azure-search-documents==11.4.0
 azure-identity==1.15.0
 
-markdown2==2.4.12
+# === Microsoft Auth (OAuth)
+msal>=1.24.0
+
+# === HTTP / Logging
+httpx==0.24.1
+requests>=2.31.0
 colorlog>=6.7.0
 
-msal>=1.24.0
+# === Zusatztools
+markdown2==2.4.12
+pytz>=2023.3
