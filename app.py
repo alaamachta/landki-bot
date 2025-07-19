@@ -40,6 +40,7 @@ AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-07-18")
+
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -66,26 +67,21 @@ def search_azure(query):
         url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
         body = {"search": query, "top": 5}
 
-        logger.info(f"🔍 Azure Search mit: {query}")
         response = requests.post(url, headers=headers, json=body)
         response.raise_for_status()
         results = response.json()
         contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        logger.info(f"📦 {len(contents)} Dokumente gefunden")
         return "\n---\n".join(contents)
     except Exception as e:
-        logger.error("❌ Azure Search Fehler:")
+        logger.error("❌ Fehler bei Azure Search:")
         logger.error(traceback.format_exc())
-        return "Fehler bei Azure Search."
+        return "Fehler bei der Azure Search."
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        logger.info(f"👤 Eingabe: {user_input}")
-
         context = search_azure(user_input)
-        logger.info(f"📚 Kontext geladen ({len(context)} Zeichen)")
 
         prompt = f"Use the following context to answer the question:\n{context}\n\nQuestion: {user_input}\nAnswer:"
 
@@ -96,20 +92,22 @@ def chat():
         )
 
         answer = response.choices[0].message.content
+
         return jsonify({
             "response": answer,
             "reply_html": markdown2.markdown(answer)
         })
+
     except Exception as e:
-        logger.error("❌ Fehler im Chat:")
+        logger.error("❌ Fehler im Chat-Endpunkt:")
         logger.error(traceback.format_exc())
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Fehler bei Verarbeitung", "details": str(e)}), 500
 
 @app.route("/")
 def root():
     return "✅ LandKI läuft!"
 
-# === MS OAuth ===
+# === OAuth ===
 def _build_msal_app():
     return msal.ConfidentialClientApplication(
         MS_CLIENT_ID,
@@ -137,19 +135,17 @@ def calendar_login():
 @app.route("/callback")
 def calendar_callback():
     if request.args.get('state') != session.get('state'):
-        return "❌ Sicherheitsprüfung fehlgeschlagen", 400
+        return "State mismatch!", 400
     code = request.args.get('code')
     try:
         token_result = _get_token_by_code(code)
         logger.info(f"[MSAL] Token erhalten: {token_result}")
     except Exception as e:
-        logger.error("[MSAL] Fehler beim Token holen")
         logger.error(traceback.format_exc())
         return "Fehler beim MSAL-Token holen", 500
 
     if "access_token" not in token_result:
         return jsonify({"error": "Token konnte nicht geholt werden", "details": token_result.get("error_description")}), 500
-
     session["access_token"] = token_result["access_token"]
     return redirect("/available-times")
 
@@ -162,43 +158,50 @@ def get_free_time_slots(access_token, days_ahead=7):
         "startDateTime": start.isoformat() + "Z",
         "endDateTime": end.isoformat() + "Z"
     }
+
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Prefer': f'outlook.timezone="{timezone}"'
     }
 
-    events = requests.get(
+    logger.info(f"[Graph] Hole Kalenderdaten von {params['startDateTime']} bis {params['endDateTime']}")
+    resp = requests.get(
         "https://graph.microsoft.com/v1.0/me/calendarView",
         headers=headers,
         params=params
-    ).json().get("value", [])
+    )
+    logger.info(f"[Graph] Status: {resp.status_code}")
+    logger.info(f"[Graph] Response Body: {resp.text[:500]}")
 
-    busy = [(datetime.fromisoformat(e["start"]["dateTime"]), datetime.fromisoformat(e["end"]["dateTime"])) for e in events]
+    if resp.status_code != 200:
+        logger.error("❌ Fehler beim Abrufen der Kalenderdaten.")
+        return []
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        logger.error("❌ Fehler beim Parsen der JSON-Antwort")
+        logger.error(traceback.format_exc())
+        return []
+
+    events = data.get("value", [])
+    busy = [(e["start"]["dateTime"], e["end"]["dateTime"]) for e in events]
+
     slots = []
     for day in range(days_ahead):
+        current_day = start + timedelta(days=day)
         for hour in range(8, 17):
-            slot_start = (start + timedelta(days=day)).replace(hour=hour)
+            slot_start = current_day.replace(hour=hour)
             slot_end = slot_start + timedelta(hours=1)
-            if all(slot_end <= b_start or slot_start >= b_end for b_start, b_end in busy):
+
+            overlaps = any(
+                slot_start.isoformat() < e_end and slot_end.isoformat() > e_start
+                for e_start, e_end in [(datetime.fromisoformat(s), datetime.fromisoformat(e)) for s, e in busy]
+            )
+            if not overlaps:
                 slots.append(slot_start.isoformat())
+
     return slots
-
-def book_appointment(access_token, datetime_str, subject, patient_info):
-    headers = {
-        'Authorization': f'Bearer {access_token}',
-        'Content-Type': 'application/json'
-    }
-    start_time = datetime.fromisoformat(datetime_str)
-    end_time = start_time + timedelta(hours=1)
-
-    payload = {
-        "subject": subject,
-        "body": {"contentType": "Text", "content": f"Termin für {patient_info}"},
-        "start": {"dateTime": start_time.isoformat(), "timeZone": "Europe/Berlin"},
-        "end": {"dateTime": end_time.isoformat(), "timeZone": "Europe/Berlin"}
-    }
-    response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=payload)
-    return response.status_code == 201
 
 @app.route("/available-times")
 def show_free_slots():
@@ -213,16 +216,44 @@ def handle_booking():
     token = session.get("access_token")
     if not token:
         return redirect("/calendar")
+
     data = request.json
     slot = data.get("datetime")
     name = data.get("name")
     dob = data.get("dob")
     reason = data.get("reason")
 
-    patient_info = f"{name}, geboren am {dob}, Grund: {reason}"
-    subject = f"Praxis-Termin mit {name}"
+    start_time = datetime.fromisoformat(slot)
+    end_time = start_time + timedelta(hours=1)
 
-    success = book_appointment(token, slot, subject, patient_info)
-    if success:
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json'
+    }
+
+    payload = {
+        "subject": f"Praxis-Termin mit {name}",
+        "body": {
+            "contentType": "Text",
+            "content": f"Termin für {name}, geboren am {dob}, Grund: {reason}"
+        },
+        "start": {
+            "dateTime": start_time.isoformat(),
+            "timeZone": "Europe/Berlin"
+        },
+        "end": {
+            "dateTime": end_time.isoformat(),
+            "timeZone": "Europe/Berlin"
+        }
+    }
+
+    response = requests.post(
+        "https://graph.microsoft.com/v1.0/me/events",
+        headers=headers,
+        json=payload
+    )
+
+    if response.status_code == 201:
         return jsonify({"status": "ok", "message": "Termin gebucht!"})
-    return jsonify({"status": "error", "message": "Fehler bei Buchung"}), 500
+    else:
+        return jsonify({"status": "error", "message": "Fehler bei Buchung"}), 500
