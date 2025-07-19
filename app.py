@@ -17,9 +17,9 @@ app.secret_key = os.getenv("SECRET_KEY")  # Beispiel: xXotgkvSMVQQJ55sKNRMf9
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
-MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")  # z. B. https://dein-bot.azurewebsites.net/callback
+MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-MS_SCOPES = ["User.Read", "Calendars.Read"]  # ❗️WICHTIG: Keine reservierten Scopes hier
+MS_SCOPES = ["User.Read", "Calendars.Read"]  # ❗️Keine reservierten Scopes hier
 
 # === Logging ===
 logging.basicConfig(level=logging.INFO)
@@ -38,7 +38,7 @@ def _get_token_by_code(auth_code):
     app_msal = _build_msal_app()
     return app_msal.acquire_token_by_authorization_code(
         code=auth_code,
-        scopes=["User.Read", "Calendars.Read"],  # Hier ist offline_access erlaubt
+        scopes=MS_SCOPES,
         redirect_uri=MS_REDIRECT_URI
     )
 
@@ -99,14 +99,14 @@ def get_free_times():
         logger.error(f"[GRAPH] Fehler beim Abrufen des Kalenders: {e}")
         return jsonify({"error": "Kalender konnte nicht geladen werden."}), 500
 
-    # Alle gebuchten Zeiten ermitteln
+    # Gebuchte Zeiten sammeln
     booked_slots = []
     for event in events:
         start = datetime.fromisoformat(event["start"]["dateTime"].replace("Z", "+00:00"))
         end = datetime.fromisoformat(event["end"]["dateTime"].replace("Z", "+00:00"))
         booked_slots.append((start, end))
 
-    # Jetzt freie Slots generieren (1h-Blöcke zwischen 08–18 Uhr)
+    # Freie Slots (1h) zwischen 08–18 Uhr suchen
     tz = pytz.utc
     free_slots = []
     current = datetime.utcnow().replace(minute=0, second=0, microsecond=0, tzinfo=tz)
@@ -125,7 +125,7 @@ def get_free_times():
 
     return jsonify({"free_slots": free_slots})
 
-# === Root Test ===
+# === Test-Route ===
 @app.route("/")
 def home():
     return "LandKI Kalender-Integration läuft!"
