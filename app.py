@@ -20,7 +20,7 @@ MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
 MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-MS_SCOPES = ["User.Read", "Calendars.Read"]
+MS_SCOPES = ["https://graph.microsoft.com/Calendars.Read", "https://graph.microsoft.com/User.Read"]
 
 # === GPT Key ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
