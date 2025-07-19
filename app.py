@@ -9,12 +9,12 @@ import msal
 import requests
 import openai
 
-# === Flask Setup ===
+# === Setup ===
 app = Flask(__name__)
 CORS(app)
 app.secret_key = os.getenv("SECRET_KEY")
 
-# === Microsoft Identity ===
+# === Microsoft Identity (MSAL) ===
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
@@ -22,7 +22,7 @@ MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 MS_SCOPES = ["https://graph.microsoft.com/Calendars.Read", "https://graph.microsoft.com/User.Read"]
 
-# === GPT Key ===
+# === OpenAI Key ===
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # === Logging ===
@@ -46,14 +46,15 @@ def _get_token_by_code(auth_code):
         redirect_uri=MS_REDIRECT_URI
     )
 
-# === Microsoft Login & Callback ===
+# === Kalender-Login mit Kontoauswahl ===
 @app.route("/calendar")
 def calendar_login():
     session["state"] = os.urandom(24).hex()
     auth_url = _build_msal_app().get_authorization_request_url(
         scopes=MS_SCOPES,
         state=session["state"],
-        redirect_uri=MS_REDIRECT_URI
+        redirect_uri=MS_REDIRECT_URI,
+        prompt="select_account"  # <<< Wichtig für Kontoauswahl
     )
     return redirect(auth_url)
 
@@ -65,6 +66,7 @@ def calendar_callback():
     try:
         token_result = _get_token_by_code(code)
         logger.info(f"[MSAL] Token erhalten: {token_result}")
+        logger.info(f"[MSAL] Angemeldet als: {token_result.get('id_token_claims', {}).get('preferred_username')}")
     except Exception as e:
         logger.error(f"[MSAL] Fehler beim Token holen: {str(e)}")
         logger.error(traceback.format_exc())
@@ -133,7 +135,7 @@ def get_free_times():
 
     return jsonify({"free_slots": free_slots})
 
-# === GPT-Analysefunktion ===
+# === GPT: Extrahiere Terminwunsch aus Sprache ===
 def call_gpt_to_extract_data(user_input):
     system_prompt = """Du bist ein Terminassistent. Analysiere Benutzereingaben und extrahiere:
 - intent: "book_appointment" wenn ein Termin gebucht werden soll, sonst "none"
@@ -164,7 +166,7 @@ Antworte immer als JSON:
 def book_appointment(name, date_str, time_str, reason):
     access_token = session.get("access_token")
     if not access_token:
-        return "⚠️ Bitte melde dich vorher über /calendar an."
+        return "⚠️ Bitte melde dich zuerst über /calendar an."
 
     try:
         start_dt = datetime.fromisoformat(f"{date_str}T{time_str}:00")
@@ -207,7 +209,7 @@ def book_appointment(name, date_str, time_str, reason):
         logger.error(f"[GRAPH] Buchungsfehler: {e}")
         return "❌ Termin konnte nicht gebucht werden."
 
-# === Chat mit Termin-Handling ===
+# === Chat mit Terminlogik ===
 @app.route("/chat", methods=["POST"])
 def chat():
     user_input = request.json.get("message", "")
@@ -221,14 +223,14 @@ def chat():
         reason = gpt_response.get("reason")
 
         if not all([name, date, time]):
-            return jsonify({"response": "Bitte gib deinen Namen, ein Datum (z. B. 2025-07-22) und eine Uhrzeit (z. B. 14:00) an."})
+            return jsonify({"response": "Bitte gib Namen, Datum (z. B. 2025-07-22) und Uhrzeit (z. B. 14:00) an."})
 
         response_text = book_appointment(name, date, time, reason)
         return jsonify({"response": response_text})
 
     return jsonify({"response": "Ich habe dich verstanden: " + user_input})
 
-# === Root Test ===
+# === Statusseite ===
 @app.route("/")
 def home():
-    return "✅ LandKI Kalender-Integration + GPT läuft!"
+    return "✅ LandKI Kalender-Integration + GPT ist aktiv!"
