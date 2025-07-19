@@ -88,9 +88,9 @@ def get_free_times():
     end = (datetime.utcnow() + timedelta(days=2)).replace(microsecond=0).isoformat() + "Z"
 
     params = {
-        "startDateTime": now,
-        "endDateTime": end
+        "$filter": f"start/dateTime ge '{now}' and end/dateTime le '{end}'"
     }
+
 
     url = "https://graph.microsoft.com/v1.0/me/events"
     try:
