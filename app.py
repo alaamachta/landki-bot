@@ -49,7 +49,7 @@ app.secret_key = os.getenv("SECRET_KEY")
 
 # === OpenAI Client ===
 client = AzureOpenAI(
-    api_key=AZURE_OPENAI_KEY,
+    api_key=AZURE_OPENAI_API_KEY,
     api_version=OPENAI_API_VERSION,
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
