@@ -9,6 +9,8 @@ from openai import AzureOpenAI
 from urllib.parse import urlencode
 import markdown2
 import msal
+from datetime import datetime, timedelta
+import json
 
 # === Logging Setup ===
 formatter = ColoredFormatter(
@@ -29,9 +31,10 @@ logger.setLevel(logging.INFO)
 
 # === Flask App ===
 app = Flask(__name__)
-CORS(app)  # Wichtig für Verbindung zu WordPress / Elementor
+CORS(app)  # Für Verbindung zu WordPress oder Frontend
+app.secret_key = os.getenv("SECRET_KEY")
 
-# === ENV-Variablen ===
+# === ENV Variablen ===
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
@@ -46,7 +49,6 @@ MS_TENANT_ID = os.getenv("MS_TENANT_ID")
 MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 MS_SCOPES = ["Calendars.Read", "Calendars.ReadWrite"]
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-app.secret_key = os.getenv("SECRET_KEY")
 
 # === Debug: ENV-Check ===
 logger.info(f"🔐 AZURE_OPENAI_API_KEY gesetzt: {'JA' if AZURE_OPENAI_API_KEY else 'NEIN'}")
@@ -90,7 +92,7 @@ def search_azure(query):
         logger.error(traceback.format_exc())
         return "Fehler bei der Azure Search."
 
-# === Chat Endpoint ===
+# === Chat-Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -121,12 +123,12 @@ def chat():
         logger.error(traceback.format_exc())
         return jsonify({"error": "Fehler bei Verarbeitung"}), 500
 
-# === Health Check ===
+# === Root Health Check ===
 @app.route("/")
 def root():
     return "✅ LandKI GPT-4o Bot läuft!"
 
-# === OAuth: MS-Kalenderanbindung ===
+# === OAuth Kalender-Login ===
 def _build_msal_app():
     return msal.ConfidentialClientApplication(
         MS_CLIENT_ID,
@@ -166,13 +168,68 @@ def calendar_callback():
         }), 500
 
     access_token = token_result["access_token"]
-    headers = {'Authorization': f'Bearer {access_token}'}
-    calendar_response = requests.get("https://graph.microsoft.com/v1.0/me/calendar/events", headers=headers)
+    session["access_token"] = access_token  # Speichern für weitere Anfragen
+    logger.info("🔑 Outlook-Token gespeichert")
+    return "✅ Kalenderzugriff erfolgreich. Du kannst nun Termine buchen."
 
-    if calendar_response.status_code != 200:
-        return jsonify({
-            "error": "Kalenderdaten konnten nicht geladen werden",
-            "details": calendar_response.text
-        }), 500
+# === Terminbuchung mit GPT ===
+@app.route("/book-appointment", methods=["POST"])
+def book_appointment():
+    try:
+        data = request.get_json()
+        user_message = data.get("message", "")
+        logger.info(f"📩 Buchungsanfrage erhalten: {user_message}")
 
-    return jsonify(calendar_response.json())
+        gpt_response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=[
+                {"role": "system", "content": (
+                    "Du bist ein Terminassistent. Extrahiere aus der Nachricht den Namen, das Symptom und das Datum im Format YYYY-MM-DD. "
+                    "Antworte nur mit einem JSON-Objekt: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
+                )},
+                {"role": "user", "content": user_message}
+            ],
+            temperature=0.2
+        )
+
+        extracted = json.loads(gpt_response.choices[0].message.content)
+        name = extracted.get("name")
+        symptom = extracted.get("symptom")
+        date_str = extracted.get("date")
+
+        logger.info(f"🤖 GPT-Extraktion: {extracted}")
+
+        if not name or not date_str:
+            return jsonify({"error": "Name oder Datum fehlt in der Nachricht."}), 400
+
+        appointment_start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
+        appointment_end = appointment_start + timedelta(hours=1)
+
+        access_token = session.get("access_token")
+        if not access_token:
+            logger.warning("⚠️ Kein Token – Umleitung zum Login")
+            return redirect("/calendar")
+
+        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        event = {
+            "subject": f"LandKI-Termin: {name} – {symptom}",
+            "start": {"dateTime": appointment_start.isoformat(), "timeZone": "Europe/Berlin"},
+            "end": {"dateTime": appointment_end.isoformat(), "timeZone": "Europe/Berlin"},
+            "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
+            "location": {"displayName": "LandKI – Online"},
+            "attendees": []
+        }
+
+        response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=event)
+
+        if response.status_code == 201:
+            logger.info(f"✅ Termin gebucht für {name} am {date_str}")
+            return jsonify({"status": "success", "message": f"Termin für {name} am {date_str} um 09:00 Uhr gebucht."})
+        else:
+            logger.error(f"❌ Terminbuchung fehlgeschlagen: {response.text}")
+            return jsonify({"status": "error", "message": "Termin konnte nicht gebucht werden."}), 500
+
+    except Exception:
+        logger.error("💥 Fehler bei der Terminverarbeitung:")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Interner Fehler beim Buchen"}), 500
