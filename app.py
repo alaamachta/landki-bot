@@ -39,12 +39,14 @@ AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
 AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
 AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
 OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-07-18")
+
 MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
 MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
 MS_TENANT_ID = os.getenv("MS_TENANT_ID")
 MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 MS_SCOPES = ["Calendars.Read", "Calendars.ReadWrite"]
 MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+
 app.secret_key = os.getenv("SECRET_KEY")
 
 # === OpenAI Client ===
@@ -147,13 +149,22 @@ def calendar_callback():
     token_result = _get_token_by_code(code)
 
     if "access_token" not in token_result:
-        return jsonify({"error": "Token konnte nicht geholt werden", "details": token_result.get("error_description")}), 500
+        return jsonify({
+            "error": "Token konnte nicht geholt werden",
+            "details": token_result.get("error_description")
+        }), 500
 
     access_token = token_result["access_token"]
     headers = {'Authorization': f'Bearer {access_token}'}
-    calendar_response = requests.get("https://graph.microsoft.com/v1.0/me/calendar/events", headers=headers)
+    calendar_response = requests.get(
+        "https://graph.microsoft.com/v1.0/me/calendar/events",
+        headers=headers
+    )
 
     if calendar_response.status_code != 200:
-        return jsonify({"error": "Kalenderdaten konnten nicht geladen werden", "details": calendar_response.text}), 500
+        return jsonify({
+            "error": "Kalenderdaten konnten nicht geladen werden",
+            "details": calendar_response.text
+        }), 500
 
     return jsonify(calendar_response.json())
