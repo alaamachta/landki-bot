@@ -6,7 +6,6 @@ import traceback
 import requests
 from colorlog import ColoredFormatter
 from openai import AzureOpenAI
-from urllib.parse import urlencode
 import markdown2
 import msal
 from datetime import datetime, timedelta
@@ -29,49 +28,43 @@ logger = logging.getLogger()
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# === Flask App Setup ===
+# === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
 app.secret_key = os.getenv("SECRET_KEY")
 
-# === Sichere ENV-Initialisierung ===
+# === Hilfsfunktion für sichere ENV-Nutzung ===
 def get_env_var(name, required=True):
     value = os.getenv(name)
     if not value and required:
-        logger.error(f"❌ Umgebungsvariable '{name}' fehlt!")
+        logger.error(f"❌ ENV fehlt: {name}")
         raise EnvironmentError(f"Missing environment variable: {name}")
     return value
 
-# === ENV-Variablen laden ===
-AZURE_OPENAI_API_KEY      = get_env_var("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT     = get_env_var("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT   = get_env_var("AZURE_OPENAI_DEPLOYMENT")
-AZURE_SEARCH_ENDPOINT     = get_env_var("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY          = get_env_var("AZURE_SEARCH_KEY")
-AZURE_SEARCH_INDEX        = get_env_var("AZURE_SEARCH_INDEX")
-OPENAI_API_VERSION        = os.getenv("OPENAI_API_VERSION", "2024-07-18")
+# === ENV-Variablen ===
+AZURE_OPENAI_API_KEY     = get_env_var("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT    = get_env_var("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT  = get_env_var("AZURE_OPENAI_DEPLOYMENT")
+AZURE_SEARCH_ENDPOINT    = get_env_var("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY         = get_env_var("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX       = get_env_var("AZURE_SEARCH_INDEX")
+OPENAI_API_VERSION       = get_env_var("OPENAI_API_VERSION", required=False) or "2024-07-01-preview"
 
-MS_CLIENT_ID              = get_env_var("MS_CLIENT_ID")
-MS_CLIENT_SECRET          = get_env_var("MS_CLIENT_SECRET")
-MS_TENANT_ID              = get_env_var("MS_TENANT_ID")
-MS_REDIRECT_URI           = get_env_var("MS_REDIRECT_URI")
-MS_SCOPES                 = ["Calendars.Read", "Calendars.ReadWrite"]
-MS_AUTHORITY              = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+MS_CLIENT_ID             = get_env_var("MS_CLIENT_ID")
+MS_CLIENT_SECRET         = get_env_var("MS_CLIENT_SECRET")
+MS_TENANT_ID             = get_env_var("MS_TENANT_ID")
+MS_REDIRECT_URI          = get_env_var("MS_REDIRECT_URI")
+MS_SCOPES                = ["Calendars.Read", "Calendars.ReadWrite"]
+MS_AUTHORITY             = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 
 # === OpenAI Client ===
-try:
-    client = AzureOpenAI(
-        api_key=AZURE_OPENAI_API_KEY,
-        api_version=OPENAI_API_VERSION,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT
-    )
-    logger.info("✅ AzureOpenAI-Client initialisiert.")
-except Exception:
-    logger.error("❌ Fehler bei AzureOpenAI-Initialisierung:")
-    logger.error(traceback.format_exc())
-    raise
+client = AzureOpenAI(
+    api_key=AZURE_OPENAI_API_KEY,
+    api_version=OPENAI_API_VERSION,
+    azure_endpoint=AZURE_OPENAI_ENDPOINT
+)
 
-# === Azure Cognitive Search Funktion ===
+# === Azure Search Funktion ===
 def search_azure(query):
     try:
         headers = {
@@ -81,28 +74,38 @@ def search_azure(query):
         }
         url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
         body = {"search": query, "top": 5}
-
-        logger.info(f"🔍 Azure Search mit: {query}")
+        logger.info(f"🔍 Suche: {query}")
         response = requests.post(url, headers=headers, json=body)
         response.raise_for_status()
         results = response.json()
         contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        logger.info(f"📦 {len(contents)} Dokumente gefunden.")
         return "\n---\n".join(contents)
     except Exception:
         logger.error("❌ Azure Search fehlgeschlagen:")
         logger.error(traceback.format_exc())
-        return "Fehler bei der Azure Search."
+        return "Fehler bei der Azure-Suche."
 
-# === GPT Chat Endpoint mit Kontext ===
+# === Routen ===
+@app.route("/")
+def root():
+    return "✅ LandKI GPT-4o läuft!"
+
+@app.route("/env-debug")
+def env_debug():
+    return jsonify({
+        "AZURE_OPENAI_API_KEY": bool(os.getenv("AZURE_OPENAI_API_KEY")),
+        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT"),
+        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        "OPENAI_API_VERSION": OPENAI_API_VERSION
+    })
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        logger.info(f"👤 Benutzer: {user_input}")
-
+        logger.info(f"👤 Frage: {user_input}")
         context = search_azure(user_input)
-        prompt = f"Nutze diesen Kontext zur Beantwortung der Frage:\n{context}\n\nFrage: {user_input}\nAntwort:"
+        prompt = f"Nutze diesen Kontext zur Beantwortung:\n{context}\n\nFrage: {user_input}\nAntwort:"
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
@@ -112,33 +115,17 @@ def chat():
 
         answer = response.choices[0].message.content
         logger.info(f"✅ GPT-Antwort: {answer[:100]}...")
-
         return jsonify({
             "response": answer,
             "reply_html": markdown2.markdown(answer)
         })
 
     except Exception:
-        logger.error("❌ Fehler im Chat-Endpunkt:")
+        logger.error("❌ Fehler im Chat:")
         logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler bei Verarbeitung"}), 500
+        return jsonify({"error": "Fehler beim Chat"}), 500
 
-# === Root Health Check ===
-@app.route("/")
-def root():
-    return "✅ LandKI GPT-4o Bot läuft!"
-
-# === ENV-Debug-Rückgabe (nur temporär verwenden!) ===
-@app.route("/env-debug")
-def env_debug():
-    return jsonify({
-        "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY"),
-        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT"),
-        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-        "AZURE_SEARCH_KEY": os.getenv("AZURE_SEARCH_KEY"),
-    })
-
-# === MSAL Auth & Kalenderintegration ===
+# === MS Kalender Login & Callback ===
 def _build_msal_app():
     return msal.ConfidentialClientApplication(
         MS_CLIENT_ID,
@@ -166,35 +153,33 @@ def calendar_login():
 @app.route("/callback")
 def calendar_callback():
     if request.args.get('state') != session.get('state'):
-        return "❌ Sicherheitsüberprüfung fehlgeschlagen", 400
+        return "❌ Ungültiger State", 400
 
     code = request.args.get('code')
     token_result = _get_token_by_code(code)
 
     if "access_token" not in token_result:
         return jsonify({
-            "error": "Token konnte nicht geholt werden",
+            "error": "Kein Token erhalten",
             "details": token_result.get("error_description")
         }), 500
 
     session["access_token"] = token_result["access_token"]
-    logger.info("🔑 Outlook-Zugriffstoken gespeichert.")
-    return "✅ Kalenderzugriff erfolgreich."
+    return "✅ Kalenderzugriff gespeichert."
 
-# === Terminbuchung via GPT (Name, Symptom, Datum) ===
+# === Terminbuchung via GPT-4o + Outlook ===
 @app.route("/book-appointment", methods=["POST"])
 def book_appointment():
     try:
-        data = request.get_json()
-        user_message = data.get("message", "")
-        logger.info(f"📩 Buchungsanfrage: {user_message}")
+        user_message = request.json.get("message", "")
+        logger.info(f"📩 Buchung: {user_message}")
 
         gpt_response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": (
-                    "Du bist ein Praxisassistent. Extrahiere Name, Symptom, Datum im Format YYYY-MM-DD. "
-                    "Antworte nur mit: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
+                    "Extrahiere Name, Symptom und Datum im Format YYYY-MM-DD aus folgender Nachricht. "
+                    "Antworte als JSON: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
                 )},
                 {"role": "user", "content": user_message}
             ],
@@ -206,38 +191,38 @@ def book_appointment():
         symptom = extracted.get("symptom")
         date_str = extracted.get("date")
 
-        logger.info(f"🤖 GPT-Daten: {extracted}")
-
         if not name or not date_str:
-            return jsonify({"error": "Name oder Datum fehlt."}), 400
+            return jsonify({"error": "Name oder Datum fehlt"}), 400
 
         start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
         end = start + timedelta(hours=1)
-
-        access_token = session.get("access_token")
-        if not access_token:
+        token = session.get("access_token")
+        if not token:
             return redirect("/calendar")
 
-        headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
         event = {
             "subject": f"Termin: {name} – {symptom}",
             "start": {"dateTime": start.isoformat(), "timeZone": "Europe/Berlin"},
             "end": {"dateTime": end.isoformat(), "timeZone": "Europe/Berlin"},
-            "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
             "location": {"displayName": "LandKI Online"},
+            "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
             "attendees": []
         }
 
         response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=event)
 
         if response.status_code == 201:
-            logger.info(f"✅ Termin gebucht: {name} am {date_str}")
-            return jsonify({"status": "success", "message": f"Termin für {name} am {date_str} um 09:00 Uhr gebucht."})
+            logger.info(f"✅ Termin gebucht für {name} am {date_str}")
+            return jsonify({"status": "success", "message": f"Termin für {name} gebucht."})
         else:
             logger.error(f"❌ Fehler bei Terminbuchung: {response.text}")
-            return jsonify({"status": "error", "message": "Termin konnte nicht gebucht werden."}), 500
+            return jsonify({"status": "error", "message": "Fehler bei Outlook"}), 500
 
     except Exception:
-        logger.error("💥 Fehler bei Terminbuchung:")
+        logger.error("💥 Terminbuchung fehlgeschlagen:")
         logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler bei der Terminverarbeitung"}), 500
+        return jsonify({"error": "Interner Fehler"}), 500
