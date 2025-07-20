@@ -29,33 +29,34 @@ logger = logging.getLogger()
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# === Flask App ===
+# === Flask App Setup ===
 app = Flask(__name__)
-CORS(app)  # Für Verbindung zu WordPress oder Frontend
+CORS(app)
 app.secret_key = os.getenv("SECRET_KEY")
 
-# === ENV Variablen ===
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-AZURE_SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
-AZURE_SEARCH_INDEX = os.getenv("AZURE_SEARCH_INDEX")
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-07-18")
+# === Sichere ENV-Initialisierung ===
+def get_env_var(name, required=True):
+    value = os.getenv(name)
+    if not value and required:
+        logger.error(f"❌ Umgebungsvariable '{name}' fehlt!")
+        raise EnvironmentError(f"Missing environment variable: {name}")
+    return value
 
-MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
-MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
-MS_TENANT_ID = os.getenv("MS_TENANT_ID")
-MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
-MS_SCOPES = ["Calendars.Read", "Calendars.ReadWrite"]
-MS_AUTHORITY = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+# === ENV-Variablen laden ===
+AZURE_OPENAI_API_KEY      = get_env_var("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_ENDPOINT     = get_env_var("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT   = get_env_var("AZURE_OPENAI_DEPLOYMENT")
+AZURE_SEARCH_ENDPOINT     = get_env_var("AZURE_SEARCH_ENDPOINT")
+AZURE_SEARCH_KEY          = get_env_var("AZURE_SEARCH_KEY")
+AZURE_SEARCH_INDEX        = get_env_var("AZURE_SEARCH_INDEX")
+OPENAI_API_VERSION        = os.getenv("OPENAI_API_VERSION", "2024-07-18")
 
-# === Debug: ENV-Check ===
-logger.info(f"🔐 AZURE_OPENAI_API_KEY gesetzt: {'JA' if AZURE_OPENAI_API_KEY else 'NEIN'}")
-logger.info(f"🌍 AZURE_OPENAI_ENDPOINT: {AZURE_OPENAI_ENDPOINT}")
-logger.info(f"🧠 AZURE_OPENAI_DEPLOYMENT: {AZURE_OPENAI_DEPLOYMENT}")
-logger.info(f"🔎 AZURE_SEARCH_INDEX: {AZURE_SEARCH_INDEX}")
-logger.info(f"🔑 SECRET_KEY gesetzt: {'JA' if app.secret_key else 'NEIN'}")
+MS_CLIENT_ID              = get_env_var("MS_CLIENT_ID")
+MS_CLIENT_SECRET          = get_env_var("MS_CLIENT_SECRET")
+MS_TENANT_ID              = get_env_var("MS_TENANT_ID")
+MS_REDIRECT_URI           = get_env_var("MS_REDIRECT_URI")
+MS_SCOPES                 = ["Calendars.Read", "Calendars.ReadWrite"]
+MS_AUTHORITY              = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
 
 # === OpenAI Client ===
 try:
@@ -64,12 +65,13 @@ try:
         api_version=OPENAI_API_VERSION,
         azure_endpoint=AZURE_OPENAI_ENDPOINT
     )
+    logger.info("✅ AzureOpenAI-Client initialisiert.")
 except Exception:
     logger.error("❌ Fehler bei AzureOpenAI-Initialisierung:")
     logger.error(traceback.format_exc())
     raise
 
-# === Azure Search Funktion ===
+# === Azure Cognitive Search Funktion ===
 def search_azure(query):
     try:
         headers = {
@@ -85,23 +87,21 @@ def search_azure(query):
         response.raise_for_status()
         results = response.json()
         contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        logger.info(f"📦 {len(contents)} Dokumente aus Index gefunden")
+        logger.info(f"📦 {len(contents)} Dokumente gefunden.")
         return "\n---\n".join(contents)
     except Exception:
-        logger.error("❌ Fehler bei Azure Search:")
+        logger.error("❌ Azure Search fehlgeschlagen:")
         logger.error(traceback.format_exc())
         return "Fehler bei der Azure Search."
 
-# === Chat-Endpoint ===
+# === GPT Chat Endpoint mit Kontext ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.json.get("message", "")
-        logger.info(f"👤 Eingabe vom User: {user_input}")
+        logger.info(f"👤 Benutzer: {user_input}")
 
         context = search_azure(user_input)
-        logger.info(f"📚 Kontext geladen ({len(context)} Zeichen)")
-
         prompt = f"Nutze diesen Kontext zur Beantwortung der Frage:\n{context}\n\nFrage: {user_input}\nAntwort:"
 
         response = client.chat.completions.create(
@@ -111,7 +111,7 @@ def chat():
         )
 
         answer = response.choices[0].message.content
-        logger.info(f"✅ Antwort: {answer[:100]}...")
+        logger.info(f"✅ GPT-Antwort: {answer[:100]}...")
 
         return jsonify({
             "response": answer,
@@ -128,7 +128,17 @@ def chat():
 def root():
     return "✅ LandKI GPT-4o Bot läuft!"
 
-# === OAuth Kalender-Login ===
+# === ENV-Debug-Rückgabe (nur temporär verwenden!) ===
+@app.route("/env-debug")
+def env_debug():
+    return jsonify({
+        "AZURE_OPENAI_API_KEY": os.getenv("AZURE_OPENAI_API_KEY"),
+        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT"),
+        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT"),
+        "AZURE_SEARCH_KEY": os.getenv("AZURE_SEARCH_KEY"),
+    })
+
+# === MSAL Auth & Kalenderintegration ===
 def _build_msal_app():
     return msal.ConfidentialClientApplication(
         MS_CLIENT_ID,
@@ -167,25 +177,24 @@ def calendar_callback():
             "details": token_result.get("error_description")
         }), 500
 
-    access_token = token_result["access_token"]
-    session["access_token"] = access_token  # Speichern für weitere Anfragen
-    logger.info("🔑 Outlook-Token gespeichert")
-    return "✅ Kalenderzugriff erfolgreich. Du kannst nun Termine buchen."
+    session["access_token"] = token_result["access_token"]
+    logger.info("🔑 Outlook-Zugriffstoken gespeichert.")
+    return "✅ Kalenderzugriff erfolgreich."
 
-# === Terminbuchung mit GPT ===
+# === Terminbuchung via GPT (Name, Symptom, Datum) ===
 @app.route("/book-appointment", methods=["POST"])
 def book_appointment():
     try:
         data = request.get_json()
         user_message = data.get("message", "")
-        logger.info(f"📩 Buchungsanfrage erhalten: {user_message}")
+        logger.info(f"📩 Buchungsanfrage: {user_message}")
 
         gpt_response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
                 {"role": "system", "content": (
-                    "Du bist ein Terminassistent. Extrahiere aus der Nachricht den Namen, das Symptom und das Datum im Format YYYY-MM-DD. "
-                    "Antworte nur mit einem JSON-Objekt: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
+                    "Du bist ein Praxisassistent. Extrahiere Name, Symptom, Datum im Format YYYY-MM-DD. "
+                    "Antworte nur mit: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
                 )},
                 {"role": "user", "content": user_message}
             ],
@@ -197,39 +206,38 @@ def book_appointment():
         symptom = extracted.get("symptom")
         date_str = extracted.get("date")
 
-        logger.info(f"🤖 GPT-Extraktion: {extracted}")
+        logger.info(f"🤖 GPT-Daten: {extracted}")
 
         if not name or not date_str:
-            return jsonify({"error": "Name oder Datum fehlt in der Nachricht."}), 400
+            return jsonify({"error": "Name oder Datum fehlt."}), 400
 
-        appointment_start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
-        appointment_end = appointment_start + timedelta(hours=1)
+        start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
+        end = start + timedelta(hours=1)
 
         access_token = session.get("access_token")
         if not access_token:
-            logger.warning("⚠️ Kein Token – Umleitung zum Login")
             return redirect("/calendar")
 
         headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
         event = {
-            "subject": f"LandKI-Termin: {name} – {symptom}",
-            "start": {"dateTime": appointment_start.isoformat(), "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": appointment_end.isoformat(), "timeZone": "Europe/Berlin"},
+            "subject": f"Termin: {name} – {symptom}",
+            "start": {"dateTime": start.isoformat(), "timeZone": "Europe/Berlin"},
+            "end": {"dateTime": end.isoformat(), "timeZone": "Europe/Berlin"},
             "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
-            "location": {"displayName": "LandKI – Online"},
+            "location": {"displayName": "LandKI Online"},
             "attendees": []
         }
 
         response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=event)
 
         if response.status_code == 201:
-            logger.info(f"✅ Termin gebucht für {name} am {date_str}")
+            logger.info(f"✅ Termin gebucht: {name} am {date_str}")
             return jsonify({"status": "success", "message": f"Termin für {name} am {date_str} um 09:00 Uhr gebucht."})
         else:
-            logger.error(f"❌ Terminbuchung fehlgeschlagen: {response.text}")
+            logger.error(f"❌ Fehler bei Terminbuchung: {response.text}")
             return jsonify({"status": "error", "message": "Termin konnte nicht gebucht werden."}), 500
 
     except Exception:
-        logger.error("💥 Fehler bei der Terminverarbeitung:")
+        logger.error("💥 Fehler bei Terminbuchung:")
         logger.error(traceback.format_exc())
-        return jsonify({"error": "Interner Fehler beim Buchen"}), 500
+        return jsonify({"error": "Fehler bei der Terminverarbeitung"}), 500
