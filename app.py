@@ -1,228 +1,182 @@
-from flask import Flask, request, jsonify, redirect, session
-from flask_cors import CORS
-import os
-import logging
-import traceback
-import requests
-from colorlog import ColoredFormatter
-from openai import AzureOpenAI
-import markdown2
+import datetime
+from flask import Flask, redirect, session, url_for, request, jsonify
 import msal
-from datetime import datetime, timedelta
-import json
+import requests
+import logging
+import pytz
+from flask_cors import CORS
 
-# === Logging Setup ===
-formatter = ColoredFormatter(
-    "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
-    log_colors={
-        'DEBUG': 'cyan',
-        'INFO': 'green',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'bold_red',
-    }
-)
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
-logger = logging.getLogger()
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# === Flask Setup ===
 app = Flask(__name__)
+app.secret_key = "DEIN-GEHEIMNIS"
 CORS(app)
-app.secret_key = os.getenv("SECRET_KEY")
 
-# === Hilfsfunktion für sichere ENV-Nutzung ===
-def get_env_var(name, required=True):
-    value = os.getenv(name)
-    if not value and required:
-        logger.error(f"❌ ENV fehlt: {name}")
-        raise EnvironmentError(f"Missing environment variable: {name}")
-    return value
+# === Konfiguration (ersetzen mit deinen Azure-Werten) ===
+CLIENT_ID = "DEINE_CLIENT_ID"
+CLIENT_SECRET = "DEIN_CLIENT_SECRET"
+AUTHORITY = "https://login.microsoftonline.com/common"
+REDIRECT_PATH = "/callback"
+SCOPE = ["Calendars.Read", "User.Read"]
+REDIRECT_URI = "https://DEINE-WEB-APP.azurewebsites.net" + REDIRECT_PATH
 
-# === ENV-Variablen ===
-AZURE_OPENAI_API_KEY     = get_env_var("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT    = get_env_var("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT  = get_env_var("AZURE_OPENAI_DEPLOYMENT")
-AZURE_SEARCH_ENDPOINT    = get_env_var("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY         = get_env_var("AZURE_SEARCH_KEY")
-AZURE_SEARCH_INDEX       = get_env_var("AZURE_SEARCH_INDEX")
-OPENAI_API_VERSION       = get_env_var("OPENAI_API_VERSION", required=False) or "2024-07-01-preview"
 
-MS_CLIENT_ID             = get_env_var("MS_CLIENT_ID")
-MS_CLIENT_SECRET         = get_env_var("MS_CLIENT_SECRET")
-MS_TENANT_ID             = get_env_var("MS_TENANT_ID")
-MS_REDIRECT_URI          = get_env_var("MS_REDIRECT_URI")
-MS_SCOPES                = ["Calendars.Read", "Calendars.ReadWrite"]
-MS_AUTHORITY             = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
+# === MSAL Setup ===
+def _build_msal_app(cache=None):
+    return msal.ConfidentialClientApplication(
+        CLIENT_ID, authority=AUTHORITY,
+        client_credential=CLIENT_SECRET, token_cache=cache
+    )
 
-# === OpenAI Client ===
-client = AzureOpenAI(
-    api_key=AZURE_OPENAI_API_KEY,
-    api_version=OPENAI_API_VERSION,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT
-)
+def _build_auth_url(state=None):
+    return _build_msal_app().get_authorization_request_url(
+        SCOPE,
+        state=state or str(datetime.datetime.now().timestamp()),
+        redirect_uri=REDIRECT_URI
+    )
 
-# === Azure Search Funktion ===
-def search_azure(query):
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": AZURE_SEARCH_KEY,
-            "Accept": "application/json;odata.metadata=none"
-        }
-        url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
-        body = {"search": query, "top": 5}
-        logger.info(f"🔍 Suche: {query}")
-        response = requests.post(url, headers=headers, json=body)
-        response.raise_for_status()
-        results = response.json()
-        contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        return "\n---\n".join(contents)
-    except Exception:
-        logger.error("❌ Azure Search fehlgeschlagen:")
-        logger.error(traceback.format_exc())
-        return "Fehler bei der Azure-Suche."
+def _get_token_from_cache():
+    if not session.get("token_cache"):
+        return None
+    cache = msal.SerializableTokenCache()
+    cache.deserialize(session["token_cache"])
+    cca = _build_msal_app(cache)
+    accounts = cca.get_accounts()
+    if accounts:
+        result = cca.acquire_token_silent(SCOPE, account=accounts[0])
+        session["token_cache"] = cache.serialize()
+        return result
+    return None
 
 # === Routen ===
 @app.route("/")
-def root():
-    return "✅ LandKI GPT-4o läuft!"
-
-@app.route("/env-debug")
-def env_debug():
-    return jsonify({
-        "AZURE_OPENAI_API_KEY": bool(os.getenv("AZURE_OPENAI_API_KEY")),
-        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT"),
-        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-        "OPENAI_API_VERSION": OPENAI_API_VERSION
-    })
-
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        user_input = request.json.get("message", "")
-        logger.info(f"👤 Frage: {user_input}")
-        context = search_azure(user_input)
-        prompt = f"Nutze diesen Kontext zur Beantwortung:\n{context}\n\nFrage: {user_input}\nAntwort:"
-
-        response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
-
-        answer = response.choices[0].message.content
-        logger.info(f"✅ GPT-Antwort: {answer[:100]}...")
-        return jsonify({
-            "response": answer,
-            "reply_html": markdown2.markdown(answer)
-        })
-
-    except Exception:
-        logger.error("❌ Fehler im Chat:")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler beim Chat"}), 500
-
-# === MS Kalender Login & Callback ===
-def _build_msal_app():
-    return msal.ConfidentialClientApplication(
-        MS_CLIENT_ID,
-        authority=MS_AUTHORITY,
-        client_credential=MS_CLIENT_SECRET
-    )
-
-def _get_token_by_code(auth_code):
-    return _build_msal_app().acquire_token_by_authorization_code(
-        auth_code,
-        scopes=MS_SCOPES,
-        redirect_uri=MS_REDIRECT_URI
-    )
+def index():
+    if not session.get("access_token"):
+        return redirect("/calendar")
+    return redirect("/available-times")
 
 @app.route("/calendar")
 def calendar_login():
-    session["state"] = os.urandom(24).hex()
-    auth_url = _build_msal_app().get_authorization_request_url(
-        scopes=MS_SCOPES,
-        state=session["state"],
-        redirect_uri=MS_REDIRECT_URI
-    )
-    return redirect(auth_url)
+    session["state"] = str(datetime.datetime.now().timestamp())
+    return redirect(_build_auth_url(session["state"]))
 
 @app.route("/callback")
-def calendar_callback():
-    if request.args.get('state') != session.get('state'):
-        return "❌ Ungültiger State", 400
+def authorized():
+    if request.args.get("state") != session.get("state"):
+        return redirect("/calendar")
 
-    code = request.args.get('code')
-    token_result = _get_token_by_code(code)
+    cache = msal.SerializableTokenCache()
+    result = _build_msal_app(cache).acquire_token_by_authorization_code(
+        request.args["code"],
+        scopes=SCOPE,
+        redirect_uri=REDIRECT_URI
+    )
+    if "access_token" in result:
+        session["access_token"] = result["access_token"]
+        session["token_cache"] = cache.serialize()
+        return redirect("/available-times")
+    return "Login fehlgeschlagen"
 
-    if "access_token" not in token_result:
-        return jsonify({
-            "error": "Kein Token erhalten",
-            "details": token_result.get("error_description")
-        }), 500
+@app.route("/available-times")
+def available_times():
+    token = session.get("access_token")
+    if not token:
+        return redirect("/calendar")
 
-    session["access_token"] = token_result["access_token"]
-    return "✅ Kalenderzugriff gespeichert."
-
-# === Terminbuchung via GPT-4o + Outlook ===
-@app.route("/book-appointment", methods=["POST"])
-def book_appointment():
     try:
-        user_message = request.json.get("message", "")
-        logger.info(f"📩 Buchung: {user_message}")
+        slots = get_exact_free_slots(token)
+        return jsonify(slots)
+    except Exception as e:
+        logging.exception("Fehler beim Abrufen der freien Zeiten")
+        return f"Fehler: {str(e)}", 500
 
-        gpt_response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": (
-                    "Extrahiere Name, Symptom und Datum im Format YYYY-MM-DD aus folgender Nachricht. "
-                    "Antworte als JSON: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
-                )},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.2
+@app.route("/chat", methods=["POST"])
+def chat():
+    user_input = request.json.get("message", "")
+    response = handle_appointment_request(user_input)
+    if response:
+        return jsonify({"reply_html": response})
+    return jsonify({"reply_html": "🤖 Ich habe dich verstanden, aber stelle deine Frage bitte etwas genauer."})
+
+
+# === Termin-Funktion: Outlook analysieren ===
+def get_exact_free_slots(access_token, days_ahead=365, start_hour=9, end_hour=17,
+                         min_minutes=15, max_minutes=120):
+    tz = pytz.timezone("Europe/Berlin")
+    now = datetime.datetime.now(tz)
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Prefer": 'outlook.timezone="Europe/Berlin"'
+    }
+
+    all_free_slots = []
+
+    for day in range(days_ahead):
+        current_day = now + datetime.timedelta(days=day)
+        if current_day.weekday() >= 5:  # Wochenende überspringen
+            continue
+
+        day_start = tz.localize(datetime.datetime.combine(current_day.date(), datetime.time(hour=start_hour)))
+        day_end = tz.localize(datetime.datetime.combine(current_day.date(), datetime.time(hour=end_hour)))
+
+        url = (
+            f"https://graph.microsoft.com/v1.0/me/calendarView?"
+            f"startDateTime={day_start.isoformat()}&endDateTime={day_end.isoformat()}"
         )
 
-        extracted = json.loads(gpt_response.choices[0].message.content)
-        name = extracted.get("name")
-        symptom = extracted.get("symptom")
-        date_str = extracted.get("date")
+        response = requests.get(url, headers=headers)
+        events = response.json().get("value", [])
 
-        if not name or not date_str:
-            return jsonify({"error": "Name oder Datum fehlt"}), 400
+        events.sort(key=lambda e: e["start"]["dateTime"])
+        current_time = day_start
 
-        start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
-        end = start + timedelta(hours=1)
-        token = session.get("access_token")
-        if not token:
-            return redirect("/calendar")
+        for event in events:
+            event_start = tz.localize(datetime.datetime.fromisoformat(event["start"]["dateTime"]))
+            if current_time < event_start:
+                duration = (event_start - current_time).total_seconds() / 60
+                if min_minutes <= duration <= max_minutes:
+                    all_free_slots.append({
+                        "start": current_time.strftime("%Y-%m-%d %H:%M"),
+                        "end": event_start.strftime("%Y-%m-%d %H:%M")
+                    })
+            current_time = tz.localize(datetime.datetime.fromisoformat(event["end"]["dateTime"]))
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-        event = {
-            "subject": f"Termin: {name} – {symptom}",
-            "start": {"dateTime": start.isoformat(), "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": end.isoformat(), "timeZone": "Europe/Berlin"},
-            "location": {"displayName": "LandKI Online"},
-            "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
-            "attendees": []
-        }
+        if current_time < day_end:
+            duration = (day_end - current_time).total_seconds() / 60
+            if min_minutes <= duration <= max_minutes:
+                all_free_slots.append({
+                    "start": current_time.strftime("%Y-%m-%d %H:%M"),
+                    "end": day_end.strftime("%Y-%m-%d %H:%M")
+                })
 
-        response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=event)
+    return all_free_slots
 
-        if response.status_code == 201:
-            logger.info(f"✅ Termin gebucht für {name} am {date_str}")
-            return jsonify({"status": "success", "message": f"Termin für {name} gebucht."})
-        else:
-            logger.error(f"❌ Fehler bei Terminbuchung: {response.text}")
-            return jsonify({"status": "error", "message": "Fehler bei Outlook"}), 500
 
-    except Exception:
-        logger.error("💥 Terminbuchung fehlgeschlagen:")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Interner Fehler"}), 500
+# === GPT-Termin-Logik (zeigt 3 freie Slots) ===
+def handle_appointment_request(message_text):
+    if any(keyword in message_text.lower() for keyword in ["termin", "verfügbar", "frei", "zeit", "buchbar"]):
+        try:
+            response = requests.get("https://DEINE-WEB-APP.azurewebsites.net/available-times")
+            times = response.json()
+
+            if not times:
+                return "⚠️ Es wurden aktuell keine freien Termine gefunden."
+
+            options = times[:3]
+            list_items = ""
+            for option in options:
+                start = option["start"].replace(":", " Uhr ", 1)
+                end = option["end"].split()[1]
+                list_items += f"<li>🕒 {start} bis {end} Uhr</li>"
+
+            html_response = f"""
+            <div>
+              <strong>✅ Folgende freie Termine sind verfügbar:</strong>
+              <ul>{list_items}</ul>
+              <p>Möchten Sie einen dieser Termine buchen<br>oder lieber ein späteres Datum wählen?</p>
+              <p><em>Sie können z. B. antworten: „Später im September“ oder „Ja, Termin 2“</em></p>
+            </div>
+            """
+            return html_response
+        except Exception as e:
+            print(f"Fehler beim Abrufen freier Zeiten: {e}")
+            return "❌ Fehler beim Abrufen der Termine."
+    return None
