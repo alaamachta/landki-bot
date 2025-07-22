@@ -99,21 +99,48 @@ def send_email(to, subject, body):
         return False
 
 def book_appointment(draft):
-    save_ok = save_to_sql(draft)
+    print("📅 Buche Termin:", draft)
+
+    # 1. Outlook-Eintrag
+    outlook_ok = create_outlook_event(draft)
+
+    # 2. SQL-Speicherung
+    sql_ok = save_to_sql(draft)
+
+    # 3. E-Mail an Patient
     email_ok = send_email(
         draft['email'],
         "Dein Termin bei LandKI",
         f"""
-        <b>Bestätigung:</b><br><br>
-        🗓 Termin: {draft['start']} – {draft['end']}<br>
-        👤 Name: {draft['name']}<br>
-        🎂 Geburtsdatum: {draft['dob']}<br>
-        📞 Telefon: {draft['phone']}<br>
-        📧 E-Mail: {draft['email']}<br>
-        💬 Grund: {draft['symptom']}<br>
+<b>Terminbestätigung</b><br><br>
+🗓 Termin: {draft['start']} – {draft['end']}<br>
+👤 Name: {draft['name']}<br>
+🎂 Geburtsdatum: {draft['dob']}<br>
+📞 Telefon: {draft['phone']}<br>
+📧 E-Mail: {draft['email']}<br>
+💬 Grund: {draft['symptom']}<br><br>
+Vielen Dank! Wir sehen uns bald.
         """
     )
-    return save_ok and email_ok
+
+    # 4. E-Mail an Praxis (optional – gleiche Funktion nochmal)
+    praxis_ok = send_email(
+        os.getenv("EMAIL_SENDER"),
+        f"Neuer Termin: {draft['name']}",
+        f"""
+<b>Neuer Patiententermin:</b><br><br>
+🗓 Termin: {draft['start']} – {draft['end']}<br>
+👤 Name: {draft['name']}<br>
+🎂 Geburtsdatum: {draft['dob']}<br>
+📞 Telefon: {draft['phone']}<br>
+📧 E-Mail: {draft['email']}<br>
+💬 Grund: {draft['symptom']}
+        """
+    )
+
+    # Wenn alles geklappt hat
+    return outlook_ok and sql_ok and email_ok and praxis_ok
+
 
 @app.route("/chat", methods=["POST"])
 def chat():
