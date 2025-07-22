@@ -1,20 +1,26 @@
 import os
+import logging
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
-from datetime import datetime, timedelta
 import openai
 import pyodbc
 import pytz
 import smtplib
 from email.mime.text import MIMEText
-import logging
+
+# === Application Insights ===
+from opencensus.ext.azure.log_exporter import AzureLogHandler
+from opencensus.ext.azure.trace_exporter import AzureExporter
+from opencensus.trace.samplers import ProbabilitySampler
+from opencensus.trace.tracer import Tracer
+from opencensus.ext.flask.flask_middleware import FlaskMiddleware
 
 # =============================
-# 🔍 Logging mit deutscher Zeitzone (für Azure Log Stream)
+# 🔍 Logging mit deutscher Zeitzone + Application Insights
 # =============================
 class TZFormatter(logging.Formatter):
     def converter(self, timestamp):
-        # Konvertiere UTC-Zeit nach Europe/Berlin
         dt = datetime.utcfromtimestamp(timestamp)
         berlin = pytz.timezone("Europe/Berlin")
         return pytz.utc.localize(dt).astimezone(berlin)
@@ -23,24 +29,22 @@ class TZFormatter(logging.Formatter):
         dt = self.converter(record.created)
         return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
-# Erstelle Formatter mit Zeit + Level
 formatter = TZFormatter("[%(asctime)s] [%(levelname)s] %(message)s")
-
-# Logging-Handler auf Stream setzen (für Azure Log Stream)
 handler = logging.StreamHandler()
 handler.setFormatter(formatter)
 
-# Verhindert doppelte Handler
 logger = logging.getLogger()
 logger.handlers.clear()
 logger.addHandler(handler)
-
-# Setzt Level basierend auf Azure-Variable
-level = logging.DEBUG if os.environ.get("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO
-logger.setLevel(level)
-
-# Bestätigung in Logs schreiben
+logger.setLevel(logging.DEBUG if os.getenv("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO)
 logger.info("✅ Logging mit deutscher Zeitzone aktiviert (Europe/Berlin)")
+
+# Application Insights Handler
+if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY"):
+    logger.addHandler(AzureLogHandler(
+        connection_string=f"InstrumentationKey={os.getenv('APPINSIGHTS_INSTRUMENTATIONKEY')}"
+    ))
+    logger.info("✅ Application Insights Logger aktiviert")
 
 # =============================
 # 🌐 Flask-App Grundkonfiguration
@@ -48,6 +52,16 @@ logger.info("✅ Logging mit deutscher Zeitzone aktiviert (Europe/Berlin)")
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "fallback-secret")
 CORS(app)
+
+# Application Insights Middleware
+if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY"):
+    middleware = FlaskMiddleware(
+        app,
+        exporter=AzureExporter(
+            connection_string=f"InstrumentationKey={os.getenv('APPINSIGHTS_INSTRUMENTATIONKEY')}"
+        ),
+        sampler=ProbabilitySampler(rate=1.0),
+    )
 
 # =============================
 # 🔑 Azure OpenAI-Konfiguration
@@ -67,33 +81,26 @@ SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING")
 # 📧 Microsoft 365 SMTP-Konfiguration
 # =============================
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
-MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
-MS_TENANT_ID = os.getenv("MS_TENANT_ID")
-MS_REDIRECT_URI = os.getenv("MS_REDIRECT_URI")
 
 # =============================
-# 📅 Freie Zeitfenster berechnen
+# 🗕️ Freie Zeitfenster berechnen
 # =============================
 def get_free_time_slots(duration_minutes=30):
     timezone = pytz.timezone("Europe/Berlin")
     now = datetime.now(timezone)
     slots = []
-
     for day in range(3):
         date = now + timedelta(days=day)
         if date.weekday() >= 5:
-            continue  # Wochenende überspringen
+            continue
         start = date.replace(hour=9, minute=0, second=0, microsecond=0)
         end = date.replace(hour=17, minute=0, second=0, microsecond=0)
-
         while start + timedelta(minutes=duration_minutes) <= end:
             slots.append({
                 "start": start.strftime("%d.%m. – %H:%M"),
                 "end": (start + timedelta(minutes=duration_minutes)).strftime("%H:%M")
             })
             start += timedelta(minutes=15)
-
     return slots
 
 def parse_time(time_str):
@@ -103,12 +110,11 @@ def parse_time(time_str):
         return datetime.now()
 
 def create_outlook_event(draft):
-    logger.info("📅 Outlook-Ereignis vorbereiten (Platzhalter)")
-    # TODO: Später Microsoft Graph API hinzufügen
-    return True  # Platzhalterwert
+    logger.info("🗓 Outlook-Ereignis vorbereiten (Platzhalter)")
+    return True
 
 # =============================
-# 💾 Speichern in Azure SQL
+# 🗀 Speichern in Azure SQL
 # =============================
 def save_to_sql(draft):
     try:
@@ -130,7 +136,7 @@ def save_to_sql(draft):
         return False
 
 # =============================
-# 📤 E-Mail senden via Microsoft 365
+# 📤 E-Mail senden
 # =============================
 def send_email(to, subject, body):
     try:
@@ -138,12 +144,10 @@ def send_email(to, subject, body):
         msg["Subject"] = subject
         msg["From"] = EMAIL_SENDER
         msg["To"] = to
-
         with smtplib.SMTP("smtp.office365.com", 587) as server:
             server.starttls()
             server.login(EMAIL_SENDER, os.getenv("EMAIL_PASSWORD", ""))
             server.send_message(msg)
-
         logger.info(f"✅ E-Mail gesendet an: {to}")
         return True
     except Exception as e:
@@ -151,11 +155,10 @@ def send_email(to, subject, body):
         return False
 
 # =============================
-# 📌 Termin vollständig buchen
+# 📌 Termin buchen
 # =============================
 def book_appointment(draft):
-    logger.info(f"📅 Buche Termin: {draft}")
-
+    logger.info(f"🗓 Buche Termin: {draft}")
     outlook_ok = create_outlook_event(draft)
     sql_ok = save_to_sql(draft)
     email_ok = send_email(
@@ -163,7 +166,7 @@ def book_appointment(draft):
         "Dein Termin bei LandKI",
         f"""
 <b>Terminbestätigung</b><br><br>
-🗓 Termin: {draft['start']} – {draft['end']}<br>
+Ὄ Termin: {draft['start']} – {draft['end']}<br>
 👤 Name: {draft['name']}<br>
 🎂 Geburtsdatum: {draft['dob']}<br>
 📞 Telefon: {draft['phone']}<br>
@@ -177,7 +180,7 @@ Vielen Dank! Wir sehen uns bald.
         f"Neuer Termin: {draft['name']}",
         f"""
 <b>Neuer Patiententermin:</b><br><br>
-🗓 Termin: {draft['start']} – {draft['end']}<br>
+Ὄ Termin: {draft['start']} – {draft['end']}<br>
 👤 Name: {draft['name']}<br>
 🎂 Geburtsdatum: {draft['dob']}<br>
 📞 Telefon: {draft['phone']}<br>
@@ -185,21 +188,18 @@ Vielen Dank! Wir sehen uns bald.
 💬 Grund: {draft['symptom']}
         """
     )
-
     return outlook_ok and sql_ok and email_ok and praxis_ok
 
 # =============================
-# 🤖 Haupt-Route für Chat
+# 🤖 Haupt-Route
 # =============================
 @app.route("/chat", methods=["POST"])
 def chat():
     user_input = request.json.get("message", "").strip()
     if "appointment_draft" not in session:
         session["appointment_draft"] = {}
-
     draft = session["appointment_draft"]
     reply = ""
-
     try:
         if not draft.get("start") and "termin" in user_input.lower():
             slots = get_free_time_slots()
@@ -222,7 +222,7 @@ def chat():
 
         elif draft.get("start") and not draft.get("name"):
             draft["name"] = user_input
-            reply = "Wie lautet dein Geburtsdatum? (z. B. 1990-05-15)"
+            reply = "Wie lautet dein Geburtsdatum? (z. B. 1990-05-15)"
 
         elif draft.get("name") and not draft.get("dob"):
             draft["dob"] = user_input
@@ -240,7 +240,7 @@ def chat():
             draft["symptom"] = user_input
             reply = f"""
 <b>Bitte bestätige deinen Termin:</b><br><br>
-🗓 <b>Termin:</b> {draft['start']} – {draft['end']}<br>
+Ὄ <b>Termin:</b> {draft['start']} – {draft['end']}<br>
 👤 <b>Name:</b> {draft['name']}<br>
 🎂 <b>Geburtsdatum:</b> {draft['dob']}<br>
 📞 <b>Telefon:</b> {draft['phone']}<br>
@@ -262,6 +262,7 @@ Mit deiner Bestätigung stimmst du der DSGVO-konformen Verarbeitung zu.<br><br>
 
         else:
             reply = "Ich bin dein Terminassistent. Möchtest du einen Termin buchen?"
+
     except Exception as e:
         logger.error(f"❌ Interner Fehler im Chatablauf: {e}")
         reply = "⚠️ Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
@@ -269,7 +270,7 @@ Mit deiner Bestätigung stimmst du der DSGVO-konformen Verarbeitung zu.<br><br>
     return jsonify({"reply": reply})
 
 # =============================
-# 🔧 Startpunkt für lokale Tests
+# 🔧 Lokaler Start
 # =============================
 if __name__ == "__main__":
     app.run(debug=True)
