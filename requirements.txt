@@ -13,3 +13,6 @@ msal>=1.24.0
 pytz
 pyodbc>=5.1.0
 python-dateutil>=2.8.2
+opencensus-ext-azure
+opencensus-ext-logging
+opencensus-ext-flask
