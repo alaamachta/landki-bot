@@ -89,7 +89,7 @@ def chat():
 
 
     # 2. Slot ausgewählt
-    elif not draft.get("start"):
+    elif not draft.get("start") and any(f"{s['start']} – {s['end']}" in user_input for s in draft.get("suggested_slots", [])):
         for s in draft.get("suggested_slots", []):
             full = f"{s['start']} – {s['end']}"
             if full == user_input.strip():
