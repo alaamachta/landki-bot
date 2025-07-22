@@ -74,10 +74,19 @@ def chat():
     if not draft.get("start") and "termin" in user_input.lower():
         slots = get_free_time_slots()
         draft["suggested_slots"] = slots
-        reply = "Bitte wähle einen Termin:<br><br>" + "".join([
-            f"<button onclick='sendPredefined(\"{s['start']} – {s['end']}\")'>{s['start']} – {s['end']}</button> "
+        reply = """
+        <div class="terminauswahl">
+          <p>Bitte wähle einen Termin:</p>
+          <div class="termin-buttons">
+        """ + "".join([
+            f"<button onclick='sendPredefined(\"{s['start']} – {s['end']}\")'>{s['start']} – {s['end']}</button>"
             for s in slots[:3]
-        ])
+        ]) + """
+          </div>
+        </div>
+        """
+
+
 
     # 2. Slot ausgewählt
     elif not draft.get("start"):
