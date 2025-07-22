@@ -14,21 +14,33 @@ import logging
 # =============================
 class TZFormatter(logging.Formatter):
     def converter(self, timestamp):
+        # Konvertiere UTC-Zeit nach Europe/Berlin
+        dt = datetime.utcfromtimestamp(timestamp)
         berlin = pytz.timezone("Europe/Berlin")
-        return datetime.fromtimestamp(timestamp, tz=berlin)
+        return pytz.utc.localize(dt).astimezone(berlin)
 
     def formatTime(self, record, datefmt=None):
         dt = self.converter(record.created)
         return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S")
 
+# Erstelle Formatter mit Zeit + Level
 formatter = TZFormatter("[%(asctime)s] [%(levelname)s] %(message)s")
+
+# Logging-Handler auf Stream setzen (für Azure Log Stream)
 handler = logging.StreamHandler()
 handler.setFormatter(formatter)
 
+# Verhindert doppelte Handler
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG if os.environ.get("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO)
+logger.handlers.clear()
 logger.addHandler(handler)
-logger.info("✅ Logging mit deutscher Zeitzone aktiviert")
+
+# Setzt Level basierend auf Azure-Variable
+level = logging.DEBUG if os.environ.get("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO
+logger.setLevel(level)
+
+# Bestätigung in Logs schreiben
+logger.info("✅ Logging mit deutscher Zeitzone aktiviert (Europe/Berlin)")
 
 # =============================
 # 🌐 Flask-App Grundkonfiguration
