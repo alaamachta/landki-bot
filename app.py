@@ -9,13 +9,6 @@ import pytz
 import smtplib
 from email.mime.text import MIMEText
 
-# === Application Insights ===
-from opencensus.ext.azure.log_exporter import AzureLogHandler
-from opencensus.ext.azure.trace_exporter import AzureExporter
-from opencensus.trace.samplers import ProbabilitySampler
-from opencensus.trace.tracer import Tracer
-from opencensus.ext.flask.flask_middleware import FlaskMiddleware
-
 # =============================
 # 🔍 Logging mit deutscher Zeitzone + Application Insights
 # =============================
@@ -39,12 +32,20 @@ logger.addHandler(handler)
 logger.setLevel(logging.DEBUG if os.getenv("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO)
 logger.info("✅ Logging mit deutscher Zeitzone aktiviert (Europe/Berlin)")
 
-# Application Insights Handler
-if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY"):
-    logger.addHandler(AzureLogHandler(
-        connection_string=f"InstrumentationKey={os.getenv('APPINSIGHTS_INSTRUMENTATIONKEY')}"
-    ))
-    logger.info("✅ Application Insights Logger aktiviert")
+# 📡 Application Insights aktivieren (optional)
+if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY") not in [None, "", "disabled"]:
+    try:
+        from opencensus.ext.azure.log_exporter import AzureLogHandler
+        insights_handler = AzureLogHandler(
+            connection_string=os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
+        )
+        insights_handler.setFormatter(formatter)
+        logger.addHandler(insights_handler)
+        logger.info("📡 Application Insights Logging aktiv")
+    except Exception as e:
+        logger.warning(f"⚠️ Konnte Application Insights nicht initialisieren: {e}")
+else:
+    logger.info("📡 Application Insights deaktiviert oder nicht konfiguriert")
 
 # =============================
 # 🌐 Flask-App Grundkonfiguration
@@ -52,16 +53,6 @@ if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY"):
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "fallback-secret")
 CORS(app)
-
-# Application Insights Middleware
-if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY"):
-    middleware = FlaskMiddleware(
-        app,
-        exporter=AzureExporter(
-            connection_string=f"InstrumentationKey={os.getenv('APPINSIGHTS_INSTRUMENTATIONKEY')}"
-        ),
-        sampler=ProbabilitySampler(rate=1.0),
-    )
 
 # =============================
 # 🔑 Azure OpenAI-Konfiguration
