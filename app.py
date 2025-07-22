@@ -71,7 +71,7 @@ def book_appointment(data):
 
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_input = request.json.get("message")
+    user_input = request.json.get("message").strip()
 
     if "appointment_draft" not in session:
         session["appointment_draft"] = {}
@@ -79,16 +79,18 @@ def chat():
     draft = session["appointment_draft"]
     reply = ""
 
+    # 1. Termin-Wunsch erkannt
     if not draft.get("start") and "termin" in user_input.lower():
         slots = get_free_time_slots()
         draft["suggested_slots"] = slots
         reply = "Bitte wähle einen Termin:<br><br>" + "".join([
-            f"<button class='appointment-btn' onclick='sendPredefined(\"{slot['start']} – {slot['end']}\")'>{slot['start']} – {slot['end']}</button> "
-            for slot in slots[:3]
+            f"<button onclick='sendPredefined(\"{s['start']} – {s['end']}\")'>{s['start']} – {s['end']}</button> "
+            for s in slots[:3]
         ])
 
-    elif not draft.get("start") and any(x in user_input for x in ["–", ":"]):
-        for s in draft.get("suggested_slots", []):
+    # 2. Slot ausgewählt
+    elif not draft.get("start") and any(s['start'] in user_input for s in draft.get("suggested_slots", [])):
+        for s in draft["suggested_slots"]:
             if s["start"] in user_input:
                 dt_start = parse_time(s["start"])
                 dt_end = parse_time(s["start"].split("–")[0] + "–" + s["end"])
@@ -97,48 +99,54 @@ def chat():
                 break
         reply = "Wie ist dein vollständiger Name?"
 
+    # 3. Name
     elif draft.get("start") and not draft.get("name"):
         draft["name"] = user_input
-        reply = "Geburtsdatum bitte (z. B. 1990-01-01):"
+        reply = "Wie lautet dein Geburtsdatum? (z. B. 1990-05-15)"
 
+    # 4. Geburtsdatum
     elif draft.get("name") and not draft.get("dob"):
         draft["dob"] = user_input
-        reply = "Deine Telefonnummer?"
+        reply = "Wie lautet deine Telefonnummer?"
 
+    # 5. Telefonnummer
     elif draft.get("dob") and not draft.get("phone"):
         draft["phone"] = user_input
-        reply = "Deine E-Mail-Adresse?"
+        reply = "Wie lautet deine E-Mail-Adresse?"
 
+    # 6. E-Mail
     elif draft.get("phone") and not draft.get("email"):
         draft["email"] = user_input
-        reply = "Kurz: Worum geht es?"
+        reply = "Was ist der Grund deines Besuchs? (z. B. Rückenschmerzen)"
 
+    # 7. Beschwerden
     elif draft.get("email") and not draft.get("symptom"):
         draft["symptom"] = user_input
         reply = f"""
-<b>Bitte bestätige die Buchung:</b><br><br>
+<b>Bitte bestätige deinen Termin:</b><br><br>
 🗓 <b>Termin:</b> {draft['start']} – {draft['end']}<br>
 👤 <b>Name:</b> {draft['name']}<br>
 🎂 <b>Geburtsdatum:</b> {draft['dob']}<br>
 📞 <b>Telefon:</b> {draft['phone']}<br>
 📧 <b>E-Mail:</b> {draft['email']}<br>
-💬 <b>Beschwerden:</b> {draft['symptom']}<br><br>
+💬 <b>Grund:</b> {draft['symptom']}<br><br>
 Mit deiner Bestätigung stimmst du der DSGVO-konformen Verarbeitung zu.<br><br>
-➡️ Schreibe: <b>Ja, Termin buchen</b> oder <b>Abbrechen</b>
+<button onclick='sendPredefined("Ja, Termin buchen")'>✅ Ja, Termin buchen</button>
+<button onclick='sendPredefined("Abbrechen")'>❌ Abbrechen</button>
         """
 
+    # 8. Buchung bestätigen
     elif "ja" in user_input.lower() and "buchen" in user_input.lower():
         success = book_appointment(draft)
-        if success:
-            reply = "✅ Termin erfolgreich gebucht. Du erhältst eine Bestätigung per E-Mail."
-        else:
-            reply = "❌ Fehler bei der Buchung. Bitte versuch es später erneut."
+        reply = "✅ Termin gebucht. Eine Bestätigung wurde gesendet." if success else "❌ Fehler beim Buchen."
         session.pop("appointment_draft", None)
 
+    # 9. Abbruch
     elif "abbrechen" in user_input.lower():
         session.pop("appointment_draft", None)
-        reply = "⛔️ Buchung abgebrochen. Sag Bescheid, wenn du es dir anders überlegst."
+        reply = "❌ Terminbuchung wurde abgebrochen."
 
+    # ⛔️ Fallback – nur wenn nichts anderes greift
     else:
         reply = "Ich bin dein Terminassistent. Möchtest du einen Termin buchen?"
 
