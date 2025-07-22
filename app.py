@@ -86,20 +86,22 @@ def chat():
         </div>
         """
 
-
-
     # 2. Slot ausgewählt
-    elif not draft.get("start") and any(f"{s['start']} – {s['end']}" in user_input for s in draft.get("suggested_slots", [])):
+    elif not draft.get("start"):
+        matched_slot = None
         for s in draft.get("suggested_slots", []):
             full = f"{s['start']} – {s['end']}"
-            if full == user_input.strip():
-                dt_start = parse_time(s["start"])
-                dt_end = parse_time(s["start"].split("–")[0] + "–" + s["end"])
-                draft["start"] = dt_start.isoformat()
-                draft["end"] = dt_end.isoformat()
-                reply = "Wie ist dein vollständiger Name?"
+            if full.lower() == user_input.lower():
+                matched_slot = s
                 break
-        if not reply:
+
+        if matched_slot:
+            dt_start = parse_time(matched_slot["start"])
+            dt_end = parse_time(matched_slot["start"].split("–")[0] + "–" + matched_slot["end"])
+            draft["start"] = dt_start.isoformat()
+            draft["end"] = dt_end.isoformat()
+            reply = "Wie ist dein vollständiger Name?"
+        else:
             reply = "Bitte wähle einen Termin durch Klick auf einen Button."
 
     # 3. Name
