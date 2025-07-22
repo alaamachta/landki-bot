@@ -89,14 +89,16 @@ def chat():
         ])
 
     # 2. Slot ausgewählt
-    elif not draft.get("start") and any(s['start'] in user_input for s in draft.get("suggested_slots", [])):
+    elif not drelif not draft.get("start") and any(f"{s['start']} – {s['end']}" in user_input for s in draft.get("suggested_slots", [])):
         for s in draft["suggested_slots"]:
-            if s["start"] in user_input:
+            full_string = f"{s['start']} – {s['end']}"
+            if full_string in user_input:
                 dt_start = parse_time(s["start"])
                 dt_end = parse_time(s["start"].split("–")[0] + "–" + s["end"])
                 draft["start"] = dt_start.isoformat()
                 draft["end"] = dt_end.isoformat()
                 break
+
         reply = "Wie ist dein vollständiger Name?"
 
     # 3. Name
