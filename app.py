@@ -7,6 +7,15 @@ import pyodbc
 import pytz
 import smtplib
 from email.mime.text import MIMEText
+import logging
+
+# Für professionelle Fehleranalyse
+logging.basicConfig(
+    level=logging.DEBUG if os.environ.get("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 
 # 🌐 App-Grundkonfiguration
 app = Flask(__name__)
