@@ -31,6 +31,16 @@ AZURE_API_KEY = os.getenv("AZURE_OPENAI_KEY")
 AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
+# Log Umgebungsvariablen und Startstatus
+logging.info("💡 Starte LandKI Bot mit GPT-Modell: %s", AZURE_DEPLOYMENT)
+if not AZURE_API_KEY:
+    logging.warning("⚠️ AZURE_OPENAI_KEY fehlt!")
+if not AZURE_ENDPOINT:
+    logging.warning("⚠️ AZURE_OPENAI_ENDPOINT fehlt!")
+if not AZURE_DEPLOYMENT:
+    logging.warning("⚠️ AZURE_OPENAI_DEPLOYMENT fehlt – nutze Default: 'gpt-4o'")
+
+
 # OpenAI Konfiguration
 openai.api_key = AZURE_API_KEY
 openai.api_base = AZURE_ENDPOINT
