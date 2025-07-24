@@ -1,3 +1,6 @@
+# ===============================================
+# LandKI Terminassistent – Vollständige app.py mit Application Insights Tracing + Logging
+# ===============================================
 import os
 import logging
 from datetime import datetime, timedelta
@@ -8,6 +11,10 @@ import pyodbc
 import pytz
 import smtplib
 from email.mime.text import MIMEText
+from opencensus.ext.azure.log_exporter import AzureLogHandler
+from opencensus.ext.azure.trace_exporter import AzureExporter
+from opencensus.trace.tracer import Tracer
+from opencensus.trace.samplers import ProbabilitySampler
 
 # =============================
 # 🔍 Logging mit deutscher Zeitzone + Application Insights
@@ -32,16 +39,18 @@ logger.addHandler(handler)
 logger.setLevel(logging.DEBUG if os.getenv("WEBSITE_LOGGING_LEVEL") == "DEBUG" else logging.INFO)
 logger.info("✅ Logging mit deutscher Zeitzone aktiviert (Europe/Berlin)")
 
-# 📡 Application Insights aktivieren (optional)
-if os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY") not in [None, "", "disabled"]:
+# 📡 Application Insights aktivieren (Handler + Tracer)
+instrumentation_key = os.getenv("APPINSIGHTS_INSTRUMENTATIONKEY")
+if instrumentation_key:
     try:
-        from opencensus.ext.azure.log_exporter import AzureLogHandler
-        insights_handler = AzureLogHandler(
-            connection_string=os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING")
-        )
+        insights_handler = AzureLogHandler(connection_string=f"InstrumentationKey={instrumentation_key}")
         insights_handler.setFormatter(formatter)
         logger.addHandler(insights_handler)
-        logger.info("📡 Application Insights Logging aktiv")
+        tracer = Tracer(
+            exporter=AzureExporter(connection_string=f"InstrumentationKey={instrumentation_key}"),
+            sampler=ProbabilitySampler(1.0)
+        )
+        logger.info("📡 Application Insights Logging + Tracing aktiv")
     except Exception as e:
         logger.warning(f"⚠️ Konnte Application Insights nicht initialisieren: {e}")
 else:
@@ -74,7 +83,7 @@ SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 
 # =============================
-# 🗕️ Freie Zeitfenster berechnen
+# 🗕️ Freie Zeitfenster berechnen (gleich)
 # =============================
 def get_free_time_slots(duration_minutes=30):
     timezone = pytz.timezone("Europe/Berlin")
@@ -104,9 +113,6 @@ def create_outlook_event(draft):
     logger.info("🗓 Outlook-Ereignis vorbereiten (Platzhalter)")
     return True
 
-# =============================
-# 🗀 Speichern in Azure SQL
-# =============================
 def save_to_sql(draft):
     try:
         conn = pyodbc.connect(SQL_CONNECTION_STRING)
@@ -126,9 +132,6 @@ def save_to_sql(draft):
         logger.error(f"❌ SQL-Fehler: {e}")
         return False
 
-# =============================
-# 📤 E-Mail senden
-# =============================
 def send_email(to, subject, body):
     try:
         msg = MIMEText(body, "html")
@@ -145,9 +148,6 @@ def send_email(to, subject, body):
         logger.error(f"❌ Mail-Fehler: {e}")
         return False
 
-# =============================
-# 📌 Termin buchen
-# =============================
 def book_appointment(draft):
     logger.info(f"🗓 Buche Termin: {draft}")
     outlook_ok = create_outlook_event(draft)
@@ -181,9 +181,6 @@ Vielen Dank! Wir sehen uns bald.
     )
     return outlook_ok and sql_ok and email_ok and praxis_ok
 
-# =============================
-# 🤖 Haupt-Route
-# =============================
 @app.route("/chat", methods=["POST"])
 def chat():
     user_input = request.json.get("message", "").strip()
@@ -199,7 +196,6 @@ def chat():
                 f"<button onclick='sendPredefined(\"{s['start']} – {s['end']}\")'>{s['start']} – {s['end']}</button>"
                 for s in slots[:3]
             ]) + "</div></div>"
-
         elif not draft.get("start"):
             matched = next((s for s in draft.get("suggested_slots", []) if f"{s['start']} – {s['end']}".lower() == user_input.lower()), None)
             if matched:
@@ -210,23 +206,18 @@ def chat():
                 reply = "Wie ist dein vollständiger Name?"
             else:
                 reply = "Bitte wähle einen Termin durch Klick auf einen Button."
-
         elif draft.get("start") and not draft.get("name"):
             draft["name"] = user_input
             reply = "Wie lautet dein Geburtsdatum? (z. B. 1990-05-15)"
-
         elif draft.get("name") and not draft.get("dob"):
             draft["dob"] = user_input
             reply = "Wie lautet deine Telefonnummer?"
-
         elif draft.get("dob") and not draft.get("phone"):
             draft["phone"] = user_input
             reply = "Wie lautet deine E-Mail-Adresse?"
-
         elif draft.get("phone") and not draft.get("email"):
             draft["email"] = user_input
             reply = "Was ist der Grund deines Besuchs?"
-
         elif draft.get("email") and not draft.get("symptom"):
             draft["symptom"] = user_input
             reply = f"""
@@ -241,27 +232,19 @@ Mit deiner Bestätigung stimmst du der DSGVO-konformen Verarbeitung zu.<br><br>
 <button onclick='sendPredefined("Ja, Termin buchen")'>✅ Ja, Termin buchen</button>
 <button onclick='sendPredefined("Abbrechen")'>❌ Abbrechen</button>
             """
-
         elif "ja" in user_input.lower() and "buchen" in user_input.lower():
             success = book_appointment(draft)
             reply = "✅ Termin gebucht. Eine Bestätigung wurde gesendet." if success else "❌ Fehler beim Buchen."
             session.pop("appointment_draft", None)
-
         elif "abbrechen" in user_input.lower():
             session.pop("appointment_draft", None)
             reply = "❌ Terminbuchung wurde abgebrochen."
-
         else:
             reply = "Ich bin dein Terminassistent. Möchtest du einen Termin buchen?"
-
     except Exception as e:
         logger.error(f"❌ Interner Fehler im Chatablauf: {e}")
         reply = "⚠️ Es ist ein Fehler aufgetreten. Bitte versuche es erneut."
-
     return jsonify({"reply": reply})
 
-# =============================
-# 🔧 Lokaler Start
-# =============================
 if __name__ == "__main__":
     app.run(debug=True)
