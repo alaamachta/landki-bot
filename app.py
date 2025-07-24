@@ -35,7 +35,7 @@ AZURE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 openai.api_key = AZURE_API_KEY
 openai.api_base = AZURE_ENDPOINT
 openai.api_type = "azure"
-openai.api_version = "2024-05-13"
+openai.api_version = "2024-07-01-preview"
 
 # Statusprüfung
 @app.route("/status", methods=["GET"])
