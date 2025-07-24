@@ -1,107 +1,71 @@
+import os
 import logging
 from flask import Flask, request, jsonify
+from flask_cors import CORS
 import openai
-import requests
-import os
+import datetime
 
-# === Logging konfigurieren ===
+# Logging aktivieren (mit deutscher Zeitzone)
 logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] : %(message)s"
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
 )
+logging.Formatter.converter = lambda *args: datetime.datetime.now(tz=datetime.timezone(datetime.timedelta(hours=2))).timetuple()
 
+# Flask-Setup
 app = Flask(__name__)
+CORS(app)  # CORS für alle Domains aktivieren (für WordPress-Frontend)
 
-# === Azure OpenAI Konfiguration ===
+# Umgebungsvariablen lesen
+AZURE_API_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")  # z. B. https://landki-foundry.openai.azure.com/
+AZURE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+
+# OpenAI-Konfiguration setzen
+openai.api_key = AZURE_API_KEY
+openai.api_base = AZURE_ENDPOINT
 openai.api_type = "azure"
-openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")  # z. B. https://...openai.azure.com/
-openai.api_version = "2024-05-01-preview"
-openai.api_key = os.getenv("AZURE_OPENAI_KEY")
+openai.api_version = "2024-05-13"
 
-GPT_DEPLOYMENT = "gpt-4o"  # Name deines Deployments
+# Healthcheck-Route
+@app.route("/status", methods=["GET"])
+def status():
+    return jsonify({
+        "openai": True,
+        "search": True,  # Falls später Azure Search aktiviert wird
+        "status": "ready"
+    })
 
-# === Azure Cognitive Search Konfiguration ===
-SEARCH_ENDPOINT = os.getenv("AZURE_SEARCH_ENDPOINT")  # z. B. https://itlandaisearch3.search.windows.net/
-SEARCH_KEY = os.getenv("AZURE_SEARCH_KEY")
-SEARCH_INDEX = "index_itland_webcrawler"
-
-# === RAG-Funktion: Hole relevante Inhalte aus Azure Search ===
-def get_context_from_search(query):
-    headers = {
-        "Content-Type": "application/json",
-        "api-key": SEARCH_KEY
-    }
-    search_url = f"{SEARCH_ENDPOINT}/indexes/{SEARCH_INDEX}/docs/search?api-version=2023-07-01"
-    body = {
-        "search": query,
-        "top": 5
-    }
-
-    try:
-        response = requests.post(search_url, headers=headers, json=body)
-        response.raise_for_status()
-        results = response.json()
-        context = "\n".join([doc.get("content", "") for doc in results.get("value", [])])
-        logging.debug(f"RAG-Treffer: {len(results.get('value', []))} Dokumente")
-        return context
-    except Exception as e:
-        logging.error(f"Fehler bei Azure Search: {e}")
-        return ""
-
-# === Hauptfunktion: Chat mit GPT-4o + Kontext ===
+# Chat-Route für dein Frontend
 @app.route("/chat", methods=["POST"])
 def chat():
-    user_input = request.json.get("message", "")
-    logging.debug(f"Nutzerfrage: {user_input}")
-
     try:
-        context = get_context_from_search(user_input)
+        data = request.get_json()
+        message = data.get("message", "")
+        logging.info(f"Empfangene Nachricht: {message}")
 
-        system_prompt = f"""
-Du bist ein hilfreicher Assistent für die Website LandKI. Beantworte Fragen nur auf Basis folgender Inhalte:
----
-{context}
----
-Wenn die Antwort nicht in den Inhalten steht, sag ehrlich, dass du es nicht weißt.
-Antworten bitte in der Sprache des Nutzers. Nutze Markdown für Formatierung.
-"""
+        if not message:
+            return jsonify({"reply": "⚠️ Leere Nachricht erhalten."}), 400
 
+        # Anfrage an GPT senden
         response = openai.ChatCompletion.create(
-            engine=GPT_DEPLOYMENT,
+            engine=AZURE_DEPLOYMENT,
             messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_input}
+                {"role": "system", "content": "Du bist ein hilfreicher KI-Assistent."},
+                {"role": "user", "content": message}
             ],
-            temperature=0.3,
-            max_tokens=1000
+            temperature=0.5,  # Für natürlichere Antworten
+            max_tokens=800
         )
 
-        reply = response.choices[0].message.content
+        reply = response.choices[0].message["content"]
+        logging.info(f"Antwort: {reply}")
         return jsonify({"reply": reply})
 
     except Exception as e:
-        logging.error(f"Fehler bei Chat-Verarbeitung: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"Fehler in /chat: {str(e)}")
+        return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage."}), 500
 
-
-# === Debug-Route: Einfacher GET-Test für Azure oder HealthCheck ===
-@app.route("/", methods=["GET"])
-def index():
-    return "OK – Minimalversion aktiv"
-
-# === Erweiterte Fehleranalyse (optional) ===
-@app.route("/status", methods=["GET"])
-def status():
-    try:
-        # Prüfe z. B. ob die ENV-Variablen vorhanden sind
-        assert openai.api_key is not None, "OpenAI API Key fehlt"
-        assert SEARCH_ENDPOINT is not None, "SEARCH_ENDPOINT fehlt"
-        return jsonify({"status": "ready", "openai": True, "search": True})
-    except Exception as e:
-        logging.error(f"/status Fehler: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-
-# === Starten der App ===
+# Startpunkt für Gunicorn
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
