@@ -4,9 +4,12 @@ from datetime import datetime
 from flask import Flask, request, jsonify
 from openai import AzureOpenAI
 import pytz
+from flask_cors import CORS
 
 # Flask Setup
 app = Flask(__name__)
+# Aktiviere CORS für alle Domains – für Produktion kannst du das später auf deine Domain einschränken
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # Logging Setup (deutsche Zeitzone)
 berlin_tz = pytz.timezone("Europe/Berlin")
