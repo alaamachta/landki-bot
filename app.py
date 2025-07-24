@@ -10,7 +10,7 @@ import requests
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "secret")
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
 # === Logging ===
 berlin = pytz.timezone("Europe/Berlin")
