@@ -28,7 +28,7 @@ deployment_id = os.environ.get("OPENAI_DEPLOYMENT_ID")
 CLIENT_ID = os.environ.get("OUTLOOK_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("OUTLOOK_CLIENT_SECRET")
 TENANT_ID = os.environ.get("OUTLOOK_TENANT_ID")
-EMAIL_SENDER = os.environ.get("EMAIL_SENDER")  # z. B. AlaaMashta@landki.onmicrosoft.com
+EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 SCOPE = ["https://graph.microsoft.com/.default"]
 
 # === MSAL Token Function ===
@@ -168,7 +168,7 @@ def chat():
     elif session.get("step") == "terminwahl":
         selected = message.strip()
         if "–" in selected:
-            start, end = [s.strip().replace("–", "-").replace("—", "-").replace("–", "-") for s in selected.split("–")]
+            start, end = [s.strip().replace("–", "-") for s in selected.split("–")]
             success = create_outlook_event(start, end, session["vorname"], session["nachname"])
             if success:
                 session.clear()
