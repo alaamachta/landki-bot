@@ -1,82 +1,63 @@
 import os
 import logging
+from datetime import datetime
 from flask import Flask, request, jsonify
-from flask_cors import CORS
-import openai
-import datetime
+from openai import AzureOpenAI
+import pytz
 
-# Logging mit deutscher Zeitzone (UTC+2)
+# Flask Setup
+app = Flask(__name__)
+
+# Logging Setup (deutsche Zeitzone)
+berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
-logging.Formatter.converter = lambda *args: datetime.datetime.now(
-    tz=datetime.timezone(datetime.timedelta(hours=2))
-).timetuple()
+logging.Formatter.converter = lambda *args: datetime.now(tz=berlin_tz).timetuple()
 
-# Flask-Setup
-app = Flask(__name__)
-CORS(app)
+# Azure OpenAI Client (Foundry)
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),  # oder AZURE_OPENAI_KEY, beide gehen
+    api_version=os.getenv("OPENAI_API_VERSION", "2024-07-01-preview"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+)
 
-@app.after_request
-def add_cors_headers(response):
-    response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
-    return response
+# GPT-Konfiguration
+MODEL = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
-# Umgebungsvariablen lesen (mit Fallback)
-AZURE_API_KEY = os.getenv("AZURE_OPENAI_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-AZURE_VERSION = os.getenv("OPENAI_API_VERSION", "2024-07-01-preview")
-
-# Prüfung und Logging
-if not AZURE_API_KEY or not AZURE_ENDPOINT:
-    logging.error("❌ AZURE API KEY oder ENDPOINT fehlt! Bitte Umgebungsvariablen prüfen.")
-else:
-    logging.info("✅ Chatbot wurde gestartet mit GPT-Modell: %s", AZURE_DEPLOYMENT)
-    logging.info("🌐 API Endpoint: %s", AZURE_ENDPOINT)
-    logging.info("📅 API Version: %s", AZURE_VERSION)
-
-# OpenAI Konfiguration
-openai.api_key = AZURE_API_KEY
-openai.api_base = AZURE_ENDPOINT
-openai.api_type = "azure"
-openai.api_version = AZURE_VERSION
-
-@app.route("/status", methods=["GET"])
-def status():
-    return jsonify({"openai": bool(AZURE_API_KEY), "status": "ready"})
+@app.route("/")
+def health_check():
+    return jsonify({"openai": True, "status": "ready"})
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.get_json()
-        message = data.get("message", "")
-        logging.info(f"📩 Eingehende Nachricht: {message}")
+        user_message = data.get("message", "").strip()
 
-        if not message:
-            return jsonify({"reply": "⚠️ Leere Nachricht erhalten."}), 400
+        if not user_message:
+            return jsonify({"reply": "Bitte gib eine Nachricht ein."}), 400
 
-        response = openai.ChatCompletion.create(
-            engine=AZURE_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": "Du bist ein hilfreicher KI-Assistent."},
-                {"role": "user", "content": message}
-            ],
-            temperature=0.5,
-            max_tokens=800
+        logging.info(f"Empfangen: {user_message}")
+
+        # GPT-Aufruf
+        response = client.chat.completions.create(
+            model=MODEL,  # Foundry erwartet model, nicht deployment_id!
+            messages=[{"role": "user", "content": user_message}],
+            temperature=0.4,  # Empfohlen: 0.2–0.7 für realistische Antworten
         )
 
-        reply = response.choices[0].message["content"]
-        logging.info(f"🤖 Antwort von GPT: {reply}")
-        return jsonify({"reply": reply})
+        gpt_reply = response.choices[0].message.content.strip()
+        logging.info(f"Antwort gesendet: {gpt_reply}")
+
+        return jsonify({"reply": gpt_reply})
 
     except Exception as e:
-        logging.error(f"❌ Fehler in /chat: {str(e)}")
+        logging.error(f"Fehler im Chat-Endpunkt: {str(e)}")
         return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage."}), 500
 
-# Lokaler Start (nicht in Azure verwendet)
+# App starten (nur lokal relevant)
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
