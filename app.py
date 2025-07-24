@@ -1,52 +1,45 @@
-# app.py (aktuelle Version mit CORS-Fix und Logging)
-
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
-from datetime import datetime
 import logging
+from datetime import datetime
+import pytz
 import os
 
-# GPT / Outlook / SQL / Mail Funktionen (Platzhalter)
+# Core-Module importieren
 from core.assistant import get_gpt_reply
-from core.calendar import get_free_time_slots, book_appointment
-from core.mail import send_email
-from core.database import insert_patient_data
 
-# Zeitzone setzen
-os.environ['TZ'] = 'Europe/Berlin'
-
-# Logging vorbereiten
-logging_level = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG").upper()
-logging.basicConfig(level=getattr(logging, logging_level), format='%(asctime)s %(levelname)s: %(message)s')
-logger = logging.getLogger(__name__)
-
-# Flask App
+# Flask App initialisieren
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "test-secret")
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)  # wichtig für JS
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+app.secret_key = os.environ.get("SECRET_KEY", "fallback_secret")
+
+# Logging aktivieren
+log_level = os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO").upper()
+logging.basicConfig(level=log_level)
+logger = logging.getLogger(__name__)
+logger.info("App gestartet am %s", datetime.now(pytz.timezone("Europe/Berlin")))
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    logger.debug("Ping empfangen")
+    return jsonify({"status": "ok", "timestamp": datetime.now(pytz.timezone("Europe/Berlin")).isoformat()})
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.get_json()
-        user_message = data.get("message", "")
+        message = data.get("message", "")
+        logger.debug("Eingehende Nachricht: %s", message)
 
-        logger.debug(f"Empfangene Nachricht: {user_message}")
+        if not message:
+            return jsonify({"reply": "Bitte gib eine Nachricht ein."}), 400
 
-        # GPT-Antwort generieren (z. B. mit Terminvorschlägen, Button-Ausgabe etc.)
-        reply = get_gpt_reply(user_message)
-
-        logger.info("Antwort erfolgreich generiert")
+        reply = get_gpt_reply(message)
         return jsonify({"reply": reply})
-
+    
     except Exception as e:
-        logger.exception("Fehler beim Verarbeiten der Anfrage")
-        return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage."}), 500
-
-# Testendpunkt für PowerShell
-@app.route("/ping", methods=["GET"])
-def ping():
-    return jsonify({"status": "Bot läuft", "zeit": datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
+        logger.exception("Fehler in /chat")
+        return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage.", "error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
