@@ -83,6 +83,25 @@ Antworten bitte in der Sprache des Nutzers. Nutze Markdown für Formatierung.
         logging.error(f"Fehler bei Chat-Verarbeitung: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+# === Debug-Route: Einfacher GET-Test für Azure oder HealthCheck ===
+@app.route("/", methods=["GET"])
+def index():
+    return "OK – Minimalversion aktiv"
+
+# === Erweiterte Fehleranalyse (optional) ===
+@app.route("/status", methods=["GET"])
+def status():
+    try:
+        # Prüfe z. B. ob die ENV-Variablen vorhanden sind
+        assert openai.api_key is not None, "OpenAI API Key fehlt"
+        assert SEARCH_ENDPOINT is not None, "SEARCH_ENDPOINT fehlt"
+        return jsonify({"status": "ready", "openai": True, "search": True})
+    except Exception as e:
+        logging.error(f"/status Fehler: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 # === Starten der App ===
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
