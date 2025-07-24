@@ -1,45 +1,55 @@
-from flask import Flask, request, jsonify, session
+# ✅ Finalisierte, testbare Version deiner `app.py` für Szenario 1: Termin buchen
+# Hinweis: Diese Version funktioniert eigenständig ohne `core/assistant.py`
+
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 import logging
 from datetime import datetime
-import pytz
 import os
+import pytz
 
-# Core-Module importieren
-from core.assistant import get_gpt_reply
+# Logging konfigurieren (UTC +2 = Europe/Berlin)
+berlin = pytz.timezone('Europe/Berlin')
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] [%(levelname)s] %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+)
 
-# Flask App initialisieren
+def log(message):
+    now = datetime.now(berlin).strftime('%Y-%m-%d %H:%M:%S')
+    logging.info(f"{now} {message}")
+
+# Flask App erstellen
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-app.secret_key = os.environ.get("SECRET_KEY", "fallback_secret")
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)  # wichtig für Frontend-Zugriff
 
-# Logging aktivieren
-log_level = os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO").upper()
-logging.basicConfig(level=log_level)
-logger = logging.getLogger(__name__)
-logger.info("App gestartet am %s", datetime.now(pytz.timezone("Europe/Berlin")))
-
+# Test-Route für Ping
 @app.route("/ping", methods=["GET"])
 def ping():
-    logger.debug("Ping empfangen")
-    return jsonify({"status": "ok", "timestamp": datetime.now(pytz.timezone("Europe/Berlin")).isoformat()})
+    log("Ping empfangen")
+    return "pong"
 
+# Haupt-Chatroute (GPT noch nicht eingebunden)
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         data = request.get_json()
-        message = data.get("message", "")
-        logger.debug("Eingehende Nachricht: %s", message)
+        user_message = data.get("message", "")
+        log(f"Eingehende Nachricht: {user_message}")
 
-        if not message:
-            return jsonify({"reply": "Bitte gib eine Nachricht ein."}), 400
+        # Platzhalter-Antwort zur Bestätigung
+        if "termin" in user_message.lower():
+            reply = "🗓️ Du möchtest einen Termin buchen. Wie lautet dein voller Name?"
+        else:
+            reply = "🤖 Danke für deine Nachricht. Was möchtest du tun? (z.B. Termin buchen)"
 
-        reply = get_gpt_reply(message)
         return jsonify({"reply": reply})
-    
-    except Exception as e:
-        logger.exception("Fehler in /chat")
-        return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage.", "error": str(e)}), 500
 
+    except Exception as e:
+        log(f"Fehler im Chat-Endpunkt: {str(e)}")
+        return jsonify({"reply": "❌ Interner Fehler beim Verarbeiten deiner Anfrage."}), 500
+
+# App starten (wichtig für Azure Web App mit Gunicorn: app:app)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8000, debug=True)
