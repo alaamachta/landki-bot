@@ -1,6 +1,7 @@
-# 📦 GitHub Actions Workflow für Azure Bot Deployment mit Clean-up (Lösung B – manuelle Secret-Namen)
+# .github/workflows/deploy.yml
+# Automatischer Azure-Deploy mit Login, Cleanup und WebApp-Deployment
 
-name: Deploy LandKI Bot to Azure
+name: ✨ Deploy LandKI Bot
 
 on:
   push:
@@ -10,37 +11,33 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
+      # 1. Quellcode aus GitHub-Repository holen
+      - name: 📂 Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      # 2. Login bei Azure mit Service Principal (gespeichert als AZURE_CREDENTIALS)
+      - name: 🔐 Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        client-id: ${{ secrets.MS_CLIENT_ID }}
-        tenant-id: ${{ secrets.MS_TENANT_ID }}
-        client-secret: ${{ secrets.MS_CLIENT_SECRET }}
+      # 3. Optional: Vor Deployment alte Dateien entfernen (per Kudu API)
+      - name: 🦄 Clean wwwroot before deployment (via Kudu API)
+        run: |
+          curl -X POST "https://${{ env.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/command" \
+            -H "Authorization: Bearer ${{ secrets.KUDU_API_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{"command":"rm -rf site/wwwroot/*"}'
+        env:
+          AZURE_WEBAPP_NAME: landki-bot-app
+        continue-on-error: true  # Bei Fehler trotzdem fortfahren
 
-    - name: Clean wwwroot before deployment (via Kudu API)
-      run: |
-        curl -X POST "https://landki-bot-app.scm.azurewebsites.net/api/command" \
-          -H "Content-Type: application/json" \
-          -d '{"command": "rm -rf site/wwwroot/*"}' \
-          -u ${{ secrets.KUDU_USER }}:${{ secrets.USERPWD }}
-
-    - name: Setup Python (optional)
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Deploy to Azure Web App
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: landki-bot-app
-        slot-name: production
-        package: .
-
-# ✅ Hinweis:
-# - Secrets in GitHub müssen exakt so heißen: MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, KUDU_USER, USERPWD
-# - Falls Kudu-API nicht erreichbar ist, kann der Clean-Schritt entfernt werden.
+      # 4. Deploy zur Azure Web App (Python Flask App)
+      - name: 🌐 Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'landki-bot-app'
+          slot-name: 'production'
+          package: .
