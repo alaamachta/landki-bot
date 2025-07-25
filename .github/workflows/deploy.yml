@@ -1,14 +1,6 @@
-# 📦 GitHub Actions Workflow: Azure Python Bot Deployment mit Cleanup
+# 📦 GitHub Actions Workflow: Deploy Python Bot to Azure Web App (mit wwwroot Cleanup)
 
-name: Deploy Azure Python Bot with Cleanup
-
-env:
-  WEBSITE_NAME: landki-bot-app
-  RESOURCE_GROUP: LandKI-Test
-  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-  AZUREAPPERVICE_SUBSCRIPTIONID: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+name: Deploy to Azure Web App
 
 on:
   push:
@@ -16,33 +8,31 @@ on:
       - main
 
 jobs:
-  deploy:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📁 Checkout repo
-      uses: actions/checkout@v2
+      - name: 📥 Checkout repo
+        uses: actions/checkout@v3
 
-    - name: 🧼 Clean wwwroot before deployment (via Kudu API)
-      run: |
-        curl -X POST "https://${{ env.WEBSITE_NAME }}.scm.azurewebsites.net/api/command" \
-        -u ${{ secrets.KUDU_USER }}:${{ secrets.USERPWD }} \
-        -H "Content-Type: application/json" \
-        -d '{"command": "rm -rf site/wwwroot/*"}'
+      - name: 🔐 Azure Login
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: 🔐 Azure Login
-      uses: azure/login@v1
-      with:
-        client-id: ${{ env.AZURE_CLIENT_ID }}
-        tenant-id: ${{ env.AZURE_TENANT_ID }}
-        subscription-id: ${{ env.AZUREAPPERVICE_SUBSCRIPTIONID }}
-        allow-no-subscriptions: true
+      - name: 🧹 Clean wwwroot before deployment (via Kudu API)
+        run: |
+          curl -u "$KUDU_USER:$USERPWD" -X POST \
+            "https://landki-bot-app-hrbtfefhgvasc5gk.scm.azurewebsites.net/api/command" \
+            -H "Content-Type: application/json" \
+            -d '{"command": "rm -rf site/wwwroot/*"}'
 
-    - name: 🌐 Deploy to Azure Web App
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: ${{ env.WEBSITE_NAME }}
-        package: .
+      - name: 🌍 Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: landki-bot-app
+          slot-name: production
+          package: .
 
-    - name: ⚖️ Post Setup Python (optional)
-      run: echo "Deployment complete."
+      - name: ⚖️ Post Setup Python (optional)
+        run: echo "Deployment abgeschlossen!"
