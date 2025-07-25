@@ -8,44 +8,40 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
-    permissions:
-      id-token: write
-      contents: read
-
     steps:
-      - name: ⬇️ Checkout repository
+      - name: 🔧 Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐍 Set up Python
+      - name: ⚖️ Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 📦 Install dependencies
+      - name: ✨ Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 🧹 Clean wwwroot before deployment (via Kudu API)
+      - name: 📂 Create deployment ZIP
+        run: |
+          zip -r app.zip . -x "*.git*" "*.github*" "*.vscode*" "tests/*"
+
+      - name: 🚽 Clean wwwroot before deployment (via Kudu API)
         run: |
           curl -X POST "https://landki-bot-app.scm.azurewebsites.net/api/command" \
             -u "${{ secrets.KUDU_USER }}:${{ secrets.KUDU_PASSWORD }}" \
             -H "Content-Type: application/json" \
             -d '{"command": "rm -rf /home/site/wwwroot/*"}'
 
-      - name: 📦 Create deployment ZIP
-        run: zip -r release.zip . -x "*.git*" -x "*.github*"
-
       - name: 🔐 Azure Login
-        uses: azure/login@v2
+        uses: azure/login@v1
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
 
-      - name: 🚀 Deploy to Azure Web App
-        uses: azure/webapps-deploy@v3
+      - name: 🌐 Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
         with:
-          app-name: ${{ secrets.AZURE_APP_NAME }}
-          package: release.zip
+          app-name: landki-bot-app
+          package: app.zip
