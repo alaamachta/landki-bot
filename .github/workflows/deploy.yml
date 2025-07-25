@@ -1,7 +1,6 @@
-# .github/workflows/deploy.yml
-# Automatischer Azure-Deploy mit Login, Cleanup und WebApp-Deployment
+# 📦 Azure Python Bot Deployment (inkl. Cleanup)
 
-name: ✨ Deploy LandKI Bot
+name: Azure Bot Deploy mit Cleanup
 
 on:
   push:
@@ -11,33 +10,38 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
+    name: Build & Deploy to Azure Web App
     steps:
-      # 1. Quellcode aus GitHub-Repository holen
-      - name: 📂 Checkout repository
-        uses: actions/checkout@v3
+      - name: Checkout Code
+        uses: actions/checkout@v2
 
-      # 2. Login bei Azure mit Service Principal (gespeichert als AZURE_CREDENTIALS)
-      - name: 🔐 Azure Login
+      - name: Azure Login
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 3. Optional: Vor Deployment alte Dateien entfernen (per Kudu API)
-      - name: 🦄 Clean wwwroot before deployment (via Kudu API)
+      - name: Clean wwwroot before deployment (via Kudu API)
         run: |
-          curl -X POST "https://${{ env.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/command" \
+          curl -X POST "https://${{ secrets.AZURE_WEBAPP_NAME }}.scm.azurewebsites.net/api/command" \
             -H "Authorization: Bearer ${{ secrets.KUDU_API_TOKEN }}" \
             -H "Content-Type: application/json" \
-            -d '{"command":"rm -rf site/wwwroot/*"}'
-        env:
-          AZURE_WEBAPP_NAME: landki-bot-app
-        continue-on-error: true  # Bei Fehler trotzdem fortfahren
+            -d '{"command": "rm -rf /home/site/wwwroot/*"}'
 
-      # 4. Deploy zur Azure Web App (Python Flask App)
-      - name: 🌐 Deploy to Azure Web App
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Zip project files
+        run: zip -r botapp.zip . -x '*.git*'
+
+      - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'landki-bot-app'
-          slot-name: 'production'
-          package: .
+          app-name: ${{ secrets.AZURE_WEBAPP_NAME }}
+          package: botapp.zip
