@@ -11,6 +11,11 @@ import msal
 from datetime import datetime, timedelta
 import json
 import pytz
+import pyodbc
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from msal import ConfidentialClientApplication
 
 # === Logging Setup ===
 formatter = ColoredFormatter(
@@ -34,7 +39,7 @@ app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY")
 
-# === Hilfsfunktion für sichere ENV-Nutzung ===
+# === ENV-Variablen ===
 def get_env_var(name, required=True):
     value = os.getenv(name)
     if not value and required:
@@ -42,7 +47,6 @@ def get_env_var(name, required=True):
         raise EnvironmentError(f"Missing environment variable: {name}")
     return value
 
-# === ENV-Variablen ===
 AZURE_OPENAI_API_KEY     = get_env_var("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT    = get_env_var("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT  = get_env_var("AZURE_OPENAI_DEPLOYMENT")
@@ -86,7 +90,6 @@ def search_azure(query):
         logger.error(traceback.format_exc())
         return "Fehler bei der Azure-Suche."
 
-# === Routen ===
 @app.route("/")
 def root():
     return "✅ LandKI GPT-4o läuft!"
@@ -126,21 +129,6 @@ def chat():
         logger.error(traceback.format_exc())
         return jsonify({"error": "Fehler beim Chat"}), 500
 
-# === MS Kalender Login & Callback ===
-def _build_msal_app():
-    return msal.ConfidentialClientApplication(
-        MS_CLIENT_ID,
-        authority=MS_AUTHORITY,
-        client_credential=MS_CLIENT_SECRET
-    )
-
-def _get_token_by_code(auth_code):
-    return _build_msal_app().acquire_token_by_authorization_code(
-        auth_code,
-        scopes=MS_SCOPES,
-        redirect_uri=MS_REDIRECT_URI
-    )
-
 @app.route("/calendar")
 def calendar_login():
     session["state"] = os.urandom(24).hex()
@@ -160,134 +148,141 @@ def calendar_callback():
     token_result = _get_token_by_code(code)
 
     if "access_token" not in token_result:
-        return jsonify({
-            "error": "Kein Token erhalten",
-            "details": token_result.get("error_description")
-        }), 500
+        return jsonify({"error": "Kein Token erhalten", "details": token_result.get("error_description")}), 500
 
     session["access_token"] = token_result["access_token"]
     return "✅ Kalenderzugriff gespeichert."
 
-# === Terminbuchung via GPT-4o + Outlook ===
-@app.route("/book-appointment", methods=["POST"])
-def book_appointment():
+def _build_msal_app():
+    return msal.ConfidentialClientApplication(
+        MS_CLIENT_ID,
+        authority=MS_AUTHORITY,
+        client_credential=MS_CLIENT_SECRET
+    )
+
+def _get_token_by_code(auth_code):
+    return _build_msal_app().acquire_token_by_authorization_code(
+        auth_code,
+        scopes=MS_SCOPES,
+        redirect_uri=MS_REDIRECT_URI
+    )
+
+@app.route("/book-test", methods=["GET"])
+def book_test():
+    test_data = {
+        "first_name": "Max",
+        "last_name": "Muster",
+        "birthdate": "1990-01-01",
+        "phone": "+49 170 1234567",
+        "email": "max.muster@example.com",
+        "symptom": "Kopfschmerzen",
+        "symptom_duration": "2 Tage",
+        "address": "Musterstraße 1, 36037 Fulda",
+        "appointment_start": (datetime.now(pytz.timezone("Europe/Berlin")) + timedelta(days=1, hours=1)).isoformat(),
+        "appointment_end": (datetime.now(pytz.timezone("Europe/Berlin")) + timedelta(days=1, hours=2)).isoformat()
+    }
+    result = book_appointment(test_data)
+    return jsonify(result)
+
+# === Buchungsfunktion ===
+def book_appointment(data):
     try:
-        user_message = request.json.get("message", "")
-        logger.info(f"📩 Buchung: {user_message}")
+        first = data.get("first_name")
+        last = data.get("last_name")
+        birth = data.get("birthdate")
+        phone = data.get("phone")
+        email = data.get("email")
+        symptom = data.get("symptom")
+        duration = data.get("symptom_duration")
+        address = data.get("address")
+        start = data.get("appointment_start")
+        end = data.get("appointment_end")
 
-        gpt_response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[
-                {"role": "system", "content": (
-                    "Extrahiere Name, Symptom und Datum im Format YYYY-MM-DD aus folgender Nachricht. "
-                    "Antworte als JSON: {\"name\": \"\", \"symptom\": \"\", \"date\": \"YYYY-MM-DD\"}"
-                )},
-                {"role": "user", "content": user_message}
-            ],
-            temperature=0.2
-        )
-
-        extracted = json.loads(gpt_response.choices[0].message.content)
-        name = extracted.get("name")
-        symptom = extracted.get("symptom")
-        date_str = extracted.get("date")
-
-        if not name or not date_str:
-            return jsonify({"error": "Name oder Datum fehlt"}), 400
-
-        start = datetime.fromisoformat(date_str + "T09:00:00+02:00")
-        end = start + timedelta(hours=1)
         token = session.get("access_token")
         if not token:
-            return redirect("/calendar")
+            return {"error": "Kein Token"}
 
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json"
         }
-        event = {
-            "subject": f"Termin: {name} – {symptom}",
-            "start": {"dateTime": start.isoformat(), "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": end.isoformat(), "timeZone": "Europe/Berlin"},
+
+        outlook_event = {
+            "subject": f"Termin: {first} {last} – {symptom}",
+            "start": {"dateTime": start, "timeZone": "Europe/Berlin"},
+            "end":   {"dateTime": end, "timeZone": "Europe/Berlin"},
             "location": {"displayName": "LandKI Online"},
-            "body": {"contentType": "Text", "content": f"Symptom: {symptom}"},
+            "body": {
+                "contentType": "Text",
+                "content": f"Name: {first} {last}\nGeburtstag: {birth}\nTelefon: {phone}\nEmail: {email}\nSymptom: {symptom} ({duration})\nAdresse: {address}"
+            },
             "attendees": []
         }
 
-        response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=event)
+        response = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=outlook_event)
+        if response.status_code != 201:
+            logger.error("❌ Outlook-Termin fehlgeschlagen")
+            return {"error": "Outlook-Termin fehlgeschlagen"}
 
-        if response.status_code == 201:
-            logger.info(f"✅ Termin gebucht für {name} am {date_str}")
-            return jsonify({"status": "success", "message": f"Termin für {name} gebucht."})
-        else:
-            logger.error(f"❌ Fehler bei Terminbuchung: {response.text}")
-            return jsonify({"status": "error", "message": "Fehler bei Outlook"}), 500
+        conn = pyodbc.connect(
+            "Driver={ODBC Driver 17 for SQL Server};"
+            "Server=landki-sql-server.database.windows.net;"
+            "Database=landki-db;"
+            "Uid=landki.sql.server;Pwd=" + os.getenv("SQL_PASSWORD") + ";"
+            "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+        )
 
-    except Exception:
-        logger.error("💥 Terminbuchung fehlgeschlagen:")
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO appointments (first_name, last_name, birthdate, phone, email, symptom, symptom_duration, address, appointment_start, appointment_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (first, last, birth, phone, email, symptom, duration, address, start, end))
+        conn.commit()
+        conn.close()
+        logger.info(f"✅ SQL gespeichert: {first} {last}")
+
+        tenant = MS_TENANT_ID
+        client_id = MS_CLIENT_ID
+        client_secret = MS_CLIENT_SECRET
+        authority = f"https://login.microsoftonline.com/{tenant}"
+        scope = ["https://outlook.office365.com/.default"]
+
+        app = ConfidentialClientApplication(client_id, authority=authority, client_credential=client_secret)
+        result = app.acquire_token_for_client(scopes=scope)
+
+        if "access_token" not in result:
+            logger.error("❌ Token für Mailversand fehlgeschlagen")
+            return {"error": "Mailtoken fehlt"}
+
+        smtp = smtplib.SMTP("smtp.office365.com", 587)
+        smtp.starttls()
+        smtp.ehlo()
+        smtp.authenticate("XOAUTH2", lambda x: f"user=AlaaMashta@LandKI.onmicrosoft.com\x01auth=Bearer {result['access_token']}\x01\x01".encode())
+
+        body = f"""
+Terminbestätigung
+-----------------
+Name: {first} {last}
+Geburtsdatum: {birth}
+Telefon: {phone}
+E-Mail: {email}
+Adresse: {address}
+Symptom: {symptom} ({duration})
+Termin: {start} – {end}
+        """
+        msg = MIMEMultipart()
+        msg['From'] = "AlaaMashta@LandKI.onmicrosoft.com"
+        msg['To'] = f"{email}"
+        msg['Subject'] = "✅ Terminbestätigung – LandKI"
+        msg.attach(MIMEText(body, "plain"))
+
+        smtp.sendmail(msg['From'], [msg['To'], "AlaaMashta@LandKI.onmicrosoft.com"], msg.as_string())
+        smtp.quit()
+
+        logger.info("📧 Terminbestätigung gesendet")
+        return {"status": "success"}
+
+    except Exception as e:
+        logger.error("💥 Fehler in book_appointment:")
         logger.error(traceback.format_exc())
-        return jsonify({"error": "Interner Fehler"}), 500
-
-# === Neue Route: Freie Zeitfenster vorschlagen ===
-@app.route("/available-times", methods=["GET"])
-def available_times():
-    try:
-        token = session.get("access_token")
-        if not token:
-            return redirect("/calendar")
-
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
-
-        berlin_tz = pytz.timezone("Europe/Berlin")
-        today = datetime.now(berlin_tz).date()
-        start_datetime = datetime.combine(today, datetime.min.time()).astimezone(berlin_tz)
-        end_datetime = start_datetime + timedelta(days=2)
-
-        url = f"https://graph.microsoft.com/v1.0/me/calendarview?startdatetime={start_datetime.isoformat()}&enddatetime={end_datetime.isoformat()}"
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            logger.error("❌ Fehler beim Abrufen der Events")
-            return jsonify({"error": "Fehler beim Abrufen der Kalenderdaten"}), 500
-
-        events = response.json().get("value", [])
-
-        def get_free_time_slots(events, start_date, end_date, slot_min=15, slot_max=120):
-            free_slots = []
-            current_date = start_date
-            while current_date <= end_date:
-                work_start = berlin_tz.localize(datetime.combine(current_date, datetime.strptime("09:00", "%H:%M").time()))
-                work_end = berlin_tz.localize(datetime.combine(current_date, datetime.strptime("17:00", "%H:%M").time()))
-                day_events = [e for e in events if e["start"]["dateTime"][:10] == str(current_date)]
-                busy = sorted([
-                    (
-                        berlin_tz.localize(datetime.fromisoformat(e["start"]["dateTime"])),
-                        berlin_tz.localize(datetime.fromisoformat(e["end"]["dateTime"]))
-                    ) for e in day_events
-                ], key=lambda x: x[0])
-
-                pointer = work_start
-                for start, end in busy:
-                    if pointer < start:
-                        gap = (start - pointer).total_seconds() / 60
-                        if slot_min <= gap <= slot_max:
-                            free_slots.append({"date": current_date.isoformat(), "start": pointer.strftime("%H:%M"), "end": start.strftime("%H:%M")})
-                    pointer = max(pointer, end)
-
-                if pointer < work_end:
-                    gap = (work_end - pointer).total_seconds() / 60
-                    if slot_min <= gap <= slot_max:
-                        free_slots.append({"date": current_date.isoformat(), "start": pointer.strftime("%H:%M"), "end": work_end.strftime("%H:%M")})
-                current_date += timedelta(days=1)
-            return free_slots
-
-        free = get_free_time_slots(events, today, today + timedelta(days=1))
-        logger.info(f"🟢 {len(free)} freie Slots gefunden")
-        return jsonify(free)
-
-    except Exception:
-        logger.error("💥 Fehler beim Analysieren der freien Zeiten")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Interner Fehler"}), 500
+        return {"error": "Interner Fehler"}
