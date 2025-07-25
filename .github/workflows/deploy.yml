@@ -1,47 +1,55 @@
-name: 🚀 Deploy LandKI Bot to Azure
+# 📦 Azure Bot Deployment mit automatischer Bereinigung (GitHub Actions)
+# Name: deploy_clean_and_upload.yml
+
+name: 🚀 Deploy LandKI Bot to Azure (Clean + Upload)
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AZURE_WEBAPP_NAME: landki-bot-app
+  AZURE_RESOURCE_GROUP: LandKI-Test
+  AZURE_PYTHON_VERSION: '3.11'
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: 🔧 Checkout code
-        uses: actions/checkout@v4
 
-      - name: ⚖️ Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: 📂 Checkout repo
+      uses: actions/checkout@v4
 
-      - name: ✨ Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: 🧼 Clean wwwroot before deployment (via Kudu API)
+      run: |
+        curl -X POST "https://landki-bot-app-hrbtfefhgvasc5gk.scm.germanywestcentral-01.azurewebsites.net/api/command" \
+          -u "${{ secrets.KUDU_USER }}:${{ secrets.KUDU_PASSWORD }}" \
+          -H "Content-Type: application/json" \
+          -d '{"command":"rm -rf site/wwwroot/*"}'
 
-      - name: 📂 Create deployment ZIP
-        run: |
-          zip -r app.zip . -x "*.git*" "*.github*" "*.vscode*" "tests/*"
+    - name: 📦 Create deployment ZIP
+      run: |
+        zip -r app.zip . -x ".git/*" -x ".github/*"
 
-      - name: 🚽 Clean wwwroot before deployment (via Kudu API)
-        run: |
-          curl -X POST "https://landki-bot-app.scm.azurewebsites.net/api/command" \
-            -u "${{ secrets.KUDU_USER }}:${{ secrets.KUDU_PASSWORD }}" \
-            -H "Content-Type: application/json" \
-            -d '{"command": "rm -rf /home/site/wwwroot/*"}'
+    - name: 🔐 Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
+        tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
+        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
 
-      - name: 🔐 Azure Login
-        uses: azure/login@v1
-        with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+    - name: 🌍 Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: ${{ env.AZURE_WEBAPP_NAME }}
+        package: app.zip
 
-      - name: 🌐 Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: landki-bot-app
-          package: app.zip
+    - name: ⚖️ Post Setup Python (optional)
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ env.AZURE_PYTHON_VERSION }}
