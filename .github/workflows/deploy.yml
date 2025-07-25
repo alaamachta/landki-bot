@@ -1,0 +1,44 @@
+name: 🚀 Deploy LandKI Bot to Azure
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 📦 Install dependencies (optional)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🧼 Clean + Create Deployment ZIP
+        run: |
+          mkdir deploy
+          cp app.py requirements.txt deploy/
+          cd deploy && zip -r ../release.zip .
+
+      - name: 🔐 Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_EB146CFA4E2646A49F30DA401CB489E6 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D478F3D68D704A1D841DC3E5D00C08EC }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_896C630DF714442D9663D3FE073C3854 }}
+
+      - name: 🚀 Deploy to Azure Web App
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: 'landki-bot-app'
+          package: release.zip
