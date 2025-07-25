@@ -1,75 +1,56 @@
-# app.py
-import os
-import logging
-import pytz
-import openai
-import markdown2
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify
 from flask_cors import CORS
+import os, pyodbc, requests
+from datetime import datetime
 from msal import ConfidentialClientApplication
-from azure.identity import DefaultAzureCredential
-from azure.search.documents import SearchClient
-from azure.core.credentials import AzureKeyCredential
-from bot_intent_router import detect_intent_with_gpt
-from utils_outlook import get_free_time_slots, book_appointment
-from utils_sql import save_patient_data
-from utils_mail import send_confirmation_emails
 
-# Initialisierung
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "secret")
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app)
 
-# Logging (Europe/Berlin)
-tz = pytz.timezone("Europe/Berlin")
-logging.basicConfig(level=os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO"))
-logger = logging.getLogger("landki-bot")
-logger.info("Bot gestartet um %s", datetime.now(tz).isoformat())
+# ENV Variablen
+SQL_CONNECTION_STRING = os.getenv("AZURE_SQL_CONNECTION_STRING")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+CLIENT_ID = os.getenv("MS_CLIENT_ID")
+CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+TENANT_ID = os.getenv("MS_TENANT_ID")
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+SCOPE = ["https://graph.microsoft.com/.default"]
 
-# OpenAI Konfiguration
-openai.api_key = os.environ.get("OPENAI_API_KEY")
-openai.api_base = os.environ.get("OPENAI_API_BASE")
-openai.api_type = "azure"
-openai.api_version = os.environ.get("OPENAI_API_VERSION", "2024-05-01-preview")
-MODEL_NAME = os.environ.get("OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+# Auth-Client
+msal_app = ConfidentialClientApplication(CLIENT_ID, client_credential=CLIENT_SECRET, authority=AUTHORITY)
 
-# Speicher für Konversationsverlauf (minimal)
-chat_sessions = {}
+def get_token():
+    token = msal_app.acquire_token_silent(SCOPE, account=None)
+    if not token:
+        token = msal_app.acquire_token_for_client(scopes=SCOPE)
+    return token["access_token"]
 
-@app.route("/chat", methods=["POST"])
-def chat():
-    user_input = request.json.get("message", "")
-    session_id = request.remote_addr  # alternativ: eigene session-ID
-    logger.info("Neue Anfrage von %s: %s", session_id, user_input)
+def send_email(to, subject, html):
+    token = get_token()
+    requests.post(
+        f"https://graph.microsoft.com/v1.0/users/{EMAIL_SENDER}/sendMail",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "message": {
+                "subject": subject,
+                "body": {"contentType": "HTML", "content": html},
+                "toRecipients": [{"emailAddress": {"address": to}}]
+            }
+        }
+    )
 
-    if session_id not in chat_sessions:
-        chat_sessions[session_id] = []
+@app.route("/book", methods=["POST"])
+def book():
+    d = request.json
+    with pyodbc.connect(SQL_CONNECTION_STRING) as conn:
+        c = conn.cursor()
+        c.execute("INSERT INTO appointment (name, birthdate, phone, email, symptom, notes, start_time, end_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  d["name"], d["birthdate"], d["phone"], d["email"], d["symptom"], d.get("notes", ""), d["start_time"], d["end_time"], datetime.utcnow())
+        conn.commit()
 
-    # Intent erkennen
-    intent = detect_intent_with_gpt(user_input)
-    logger.info("Intent erkannt: %s", intent)
-
-    # Einfache Routing-Logik
-    if intent == "greeting":
-        reply = "Hallo! Ich bin dein digitaler Assistent. Wie kann ich helfen?"
-    elif intent == "book_appointment":
-        reply = "📅 Du möchtest einen Termin buchen. Wie lautet dein **Vorname**?"
-    elif intent == "status_request":
-        reply = "🔍 Du möchtest deinen Terminstatus prüfen. Bitte nenne mir deinen **Vornamen**."
-    elif intent == "cancel_appointment":
-        reply = "❌ Du möchtest einen Termin stornieren. Wie lautet dein **Vorname**?"
-    elif intent == "change_appointment":
-        reply = "🔄 Du möchtest einen Termin ändern. Wie lautet dein **Vorname**?"
-    elif intent == "smalltalk":
-        reply = "🙂 Ich bin hier, um dir bei Terminen zu helfen. Wie kann ich dir helfen?"
-    else:
-        reply = "🤖 Ich habe das leider nicht verstanden. Möchtest du einen Termin **buchen**, **verschieben**, **absagen** oder **Status prüfen**?"
-
-    chat_sessions[session_id].append({"role": "user", "content": user_input})
-    chat_sessions[session_id].append({"role": "assistant", "content": reply})
-
-    return jsonify({"reply": reply})
-
-if __name__ == "__main__":
-    app.run(debug=True)
+    send_email(d["email"], "Terminbestätigung", f"<h3>Hallo {d['name']}</h3><p>Ihr Termin wurde gebucht.</p>")
+    send_email(EMAIL_SENDER, "Neue Terminbuchung", f"<b>Neuer Termin für {d['name']}</b>")
+    return jsonify({"status": "success"})
