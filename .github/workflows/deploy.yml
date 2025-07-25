@@ -25,7 +25,7 @@ jobs:
 
       - name: 🧹 Clean wwwroot before deployment (via Kudu API)
         run: |
-          curl -X POST "https://landki-bot-app-hrbtfefhgvasc5gk.scm.azurewebsites.net/api/command" \
+          curl -X POST "https://landki-bot-app.scm.azurewebsites.net" \
             -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
             -H "Content-Type: application/json" \
             -d '{"command": "rm -rf /home/site/wwwroot/*"}'
