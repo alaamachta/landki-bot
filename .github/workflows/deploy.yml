@@ -1,4 +1,4 @@
-name: 🚀 Deploy LandKI Bot to Azure
+name: 🚀 Deploy LandKI Bot to Azure (Clean ZIP Deployment)
 
 on:
   push:
@@ -23,19 +23,28 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 🧼 Clean + Create Deployment ZIP
+      - name: 🧹 Clean wwwroot before deployment (via Kudu API)
+        run: |
+          curl -X POST "https://landki-bot-app-hrbtfefhgvasc5gk.scm.azurewebsites.net/api/command" \
+            -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
+            -H "Content-Type: application/json" \
+            -d '{"command": "rm -rf /home/site/wwwroot/*"}'
+        env:
+          DEPLOY_USER: ${{ secrets.KUDU_USER }}
+          DEPLOY_PASSWORD: ${{ secrets.KUDU_PASSWORD }}
+
+      - name: 📦 Create deployment ZIP
         run: |
           mkdir deploy
           cp app.py requirements.txt deploy/
           cd deploy && zip -r ../release.zip .
 
-      - name: 🔐 Login to Azure with Federated Identity
+      - name: 🔐 Azure Login
         uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_EB146CFA4E2646A49F30DA401CB489E6 }}
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D478F3D68D704A1D841DC3E5D00C08EC }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_896C630DF714442D9663D3FE073C3854 }}
-          enable-AzPSSession: false
 
       - name: 🚀 Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
