@@ -1,6 +1,6 @@
-# 📦 GitHub Actions Workflow: Deploy Python Bot to Azure Web App (mit wwwroot Cleanup)
+# 📦 GitHub Actions Workflow für Azure Bot Deployment mit Clean-up (Lösung B – manuelle Secret-Namen)
 
-name: Deploy to Azure Web App
+name: Deploy LandKI Bot to Azure
 
 on:
   push:
@@ -10,29 +10,37 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 📥 Checkout repo
-        uses: actions/checkout@v3
 
-      - name: 🔐 Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+    - name: Checkout repo
+      uses: actions/checkout@v3
 
-      - name: 🧹 Clean wwwroot before deployment (via Kudu API)
-        run: |
-          curl -u "$KUDU_USER:$USERPWD" -X POST \
-            "https://landki-bot-app-hrbtfefhgvasc5gk.scm.azurewebsites.net/api/command" \
-            -H "Content-Type: application/json" \
-            -d '{"command": "rm -rf site/wwwroot/*"}'
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.MS_CLIENT_ID }}
+        tenant-id: ${{ secrets.MS_TENANT_ID }}
+        client-secret: ${{ secrets.MS_CLIENT_SECRET }}
 
-      - name: 🌍 Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: landki-bot-app
-          slot-name: production
-          package: .
+    - name: Clean wwwroot before deployment (via Kudu API)
+      run: |
+        curl -X POST "https://landki-bot-app.scm.azurewebsites.net/api/command" \
+          -H "Content-Type: application/json" \
+          -d '{"command": "rm -rf site/wwwroot/*"}' \
+          -u ${{ secrets.KUDU_USER }}:${{ secrets.USERPWD }}
 
-      - name: ⚖️ Post Setup Python (optional)
-        run: echo "Deployment abgeschlossen!"
+    - name: Setup Python (optional)
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: landki-bot-app
+        slot-name: production
+        package: .
+
+# ✅ Hinweis:
+# - Secrets in GitHub müssen exakt so heißen: MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID, KUDU_USER, USERPWD
+# - Falls Kudu-API nicht erreichbar ist, kann der Clean-Schritt entfernt werden.
