@@ -25,12 +25,10 @@ jobs:
           cp app.py requirements.txt deploy/
           cd deploy && zip -r ../release.zip .
 
-      - name: 🔐 Login to Azure
+      - name: 🔐 Login to Azure (via Publish Profile)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_EB146CFA4E2646A49F30DA401CB489E6 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_D478F3D68D704A1D841DC3E5D00C08EC }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_896C630DF714442D9663D3FE073C3854 }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: 🚀 Deploy to Azure Web App
         uses: azure/webapps-deploy@v3
