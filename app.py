@@ -10,6 +10,7 @@ import markdown2
 import msal
 from datetime import datetime, timedelta
 import json
+import pytz
 
 # === Logging Setup ===
 formatter = ColoredFormatter(
@@ -224,5 +225,69 @@ def book_appointment():
 
     except Exception:
         logger.error("💥 Terminbuchung fehlgeschlagen:")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": "Interner Fehler"}), 500
+
+# === Neue Route: Freie Zeitfenster vorschlagen ===
+@app.route("/available-times", methods=["GET"])
+def available_times():
+    try:
+        token = session.get("access_token")
+        if not token:
+            return redirect("/calendar")
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
+
+        berlin_tz = pytz.timezone("Europe/Berlin")
+        today = datetime.now(berlin_tz).date()
+        start_datetime = datetime.combine(today, datetime.min.time()).astimezone(berlin_tz)
+        end_datetime = start_datetime + timedelta(days=2)
+
+        url = f"https://graph.microsoft.com/v1.0/me/calendarview?startdatetime={start_datetime.isoformat()}&enddatetime={end_datetime.isoformat()}"
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            logger.error("❌ Fehler beim Abrufen der Events")
+            return jsonify({"error": "Fehler beim Abrufen der Kalenderdaten"}), 500
+
+        events = response.json().get("value", [])
+
+        def get_free_time_slots(events, start_date, end_date, slot_min=15, slot_max=120):
+            free_slots = []
+            current_date = start_date
+            while current_date <= end_date:
+                work_start = berlin_tz.localize(datetime.combine(current_date, datetime.strptime("09:00", "%H:%M").time()))
+                work_end = berlin_tz.localize(datetime.combine(current_date, datetime.strptime("17:00", "%H:%M").time()))
+                day_events = [e for e in events if e["start"]["dateTime"][:10] == str(current_date)]
+                busy = sorted([
+                    (
+                        berlin_tz.localize(datetime.fromisoformat(e["start"]["dateTime"])),
+                        berlin_tz.localize(datetime.fromisoformat(e["end"]["dateTime"]))
+                    ) for e in day_events
+                ], key=lambda x: x[0])
+
+                pointer = work_start
+                for start, end in busy:
+                    if pointer < start:
+                        gap = (start - pointer).total_seconds() / 60
+                        if slot_min <= gap <= slot_max:
+                            free_slots.append({"date": current_date.isoformat(), "start": pointer.strftime("%H:%M"), "end": start.strftime("%H:%M")})
+                    pointer = max(pointer, end)
+
+                if pointer < work_end:
+                    gap = (work_end - pointer).total_seconds() / 60
+                    if slot_min <= gap <= slot_max:
+                        free_slots.append({"date": current_date.isoformat(), "start": pointer.strftime("%H:%M"), "end": work_end.strftime("%H:%M")})
+                current_date += timedelta(days=1)
+            return free_slots
+
+        free = get_free_time_slots(events, today, today + timedelta(days=1))
+        logger.info(f"🟢 {len(free)} freie Slots gefunden")
+        return jsonify(free)
+
+    except Exception:
+        logger.error("💥 Fehler beim Analysieren der freien Zeiten")
         logger.error(traceback.format_exc())
         return jsonify({"error": "Interner Fehler"}), 500
