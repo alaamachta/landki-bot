@@ -1,8 +1,7 @@
-# ✅ GitHub Actions Workflow für Deployment mit Azure Login + Kudu-Bereinigung
-# Projekt: LandKI Bot (landki-bot-app)
-# Letzte Änderung: Korrektur Kudu-URL + Logging
+# deploy.yml
+# ✨ Alternative ohne Kudu-Bereinigung: Einfacher Zip-Deploy via Azure CLI
 
-name: Deploy Azure Bot
+name: Deploy LandKI Bot
 
 on:
   push:
@@ -12,37 +11,35 @@ on:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
 
-    - name: Checkout repo
-      uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: 🧹 Clean wwwroot before deployment (via Kudu API)
-      run: |
-        echo "⚙️ Cleaning wwwroot via Kudu API..."
-        curl -X POST "https://landki-bot-app.scm.azurewebsites.net/api/command" \
-          -H "Authorization: Basic ${{ secrets.KUDU_CREDENTIALS }}" \
-          -H "Content-Type: application/json" \
-          -d '{"command": "rm -rf site/wwwroot/*"}'
+      - name: Archive code
+        run: |
+          zip -r release.zip . -x "*.git*"
 
-    - name: Setup Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Azure Login (via AZURE_CREDENTIALS)
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Deploy using ZipDeploy
+        uses: azure/webapps-deploy@v3
+        with:
+          app-name: landki-bot-app
+          package: release.zip
 
-    - name: Deploy to Azure Web App
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: 'landki-bot-app'
-        slot-name: 'production'
-        package: '.'
+      - name: ✅ Done
+        run: echo "Deployment finished without Kudu API"
