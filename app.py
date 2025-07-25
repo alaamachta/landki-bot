@@ -30,7 +30,7 @@ logger.setLevel(logging.INFO)
 
 # === Flask Setup ===
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY")
 
 # === Hilfsfunktion für sichere ENV-Nutzung ===
