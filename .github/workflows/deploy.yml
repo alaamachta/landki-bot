@@ -1,55 +1,48 @@
-# 📦 Azure Bot Deployment mit automatischer Bereinigung (GitHub Actions)
-# Name: deploy_clean_and_upload.yml
+# 📦 GitHub Actions Workflow: Azure Python Bot Deployment mit Cleanup
 
-name: 🚀 Deploy LandKI Bot to Azure (Clean + Upload)
+name: Deploy Azure Python Bot with Cleanup
+
+env:
+  WEBSITE_NAME: landki-bot-app
+  RESOURCE_GROUP: LandKI-Test
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZUREAPPERVICE_SUBSCRIPTIONID: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
 
 on:
   push:
     branches:
       - main
 
-permissions:
-  id-token: write
-  contents: read
-
-env:
-  AZURE_WEBAPP_NAME: landki-bot-app
-  AZURE_RESOURCE_GROUP: LandKI-Test
-  AZURE_PYTHON_VERSION: '3.11'
-
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
-    steps:
 
-    - name: 📂 Checkout repo
-      uses: actions/checkout@v4
+    steps:
+    - name: 📁 Checkout repo
+      uses: actions/checkout@v2
 
     - name: 🧼 Clean wwwroot before deployment (via Kudu API)
       run: |
-        curl -X POST "https://landki-bot-app-hrbtfefhgvasc5gk.scm.germanywestcentral-01.azurewebsites.net/api/command" \
-          -u "${{ secrets.KUDU_USER }}:${{ secrets.KUDU_PASSWORD }}" \
-          -H "Content-Type: application/json" \
-          -d '{"command":"rm -rf site/wwwroot/*"}'
-
-    - name: 📦 Create deployment ZIP
-      run: |
-        zip -r app.zip . -x ".git/*" -x ".github/*"
+        curl -X POST "https://${{ env.WEBSITE_NAME }}.scm.azurewebsites.net/api/command" \
+        -u ${{ secrets.KUDU_USER }}:${{ secrets.USERPWD }} \
+        -H "Content-Type: application/json" \
+        -d '{"command": "rm -rf site/wwwroot/*"}'
 
     - name: 🔐 Azure Login
       uses: azure/login@v1
       with:
-        client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID }}
-        tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID }}
-        subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID }}
+        client-id: ${{ env.AZURE_CLIENT_ID }}
+        tenant-id: ${{ env.AZURE_TENANT_ID }}
+        subscription-id: ${{ env.AZUREAPPERVICE_SUBSCRIPTIONID }}
+        allow-no-subscriptions: true
 
-    - name: 🌍 Deploy to Azure Web App
+    - name: 🌐 Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
-        app-name: ${{ env.AZURE_WEBAPP_NAME }}
-        package: app.zip
+        app-name: ${{ env.WEBSITE_NAME }}
+        package: .
 
     - name: ⚖️ Post Setup Python (optional)
-      uses: actions/setup-python@v5
-      with:
-        python-version: ${{ env.AZURE_PYTHON_VERSION }}
+      run: echo "Deployment complete."
