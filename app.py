@@ -30,17 +30,14 @@ client = AzureOpenAI(
 )
 MODEL_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
-# === /chat Endpoint ===
-@app.route("/chat", methods=["POST"])
+# === SQL-Funktion: Terminstatus prüfen ===
 def get_appointment_status(first_name, last_name, birthday):
     try:
-        # Verbindung zur Azure SQL-Datenbank
         conn = pyodbc.connect(
             f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=landki-sql-server.database.windows.net;DATABASE=landki-db;UID=landki.sql.server;PWD={os.environ.get("SQL_PASSWORD")}',
             timeout=5
         )
         cursor = conn.cursor()
-
         query = """
             SELECT appointment_start, address
             FROM dbo.appointments
@@ -62,7 +59,9 @@ def get_appointment_status(first_name, last_name, birthday):
     except Exception as e:
         logging.exception("SQL-Abfragefehler:")
         return "Es gab ein Problem beim Abrufen des Termins. Bitte versuchen Sie es später erneut."
-        
+
+# === /chat Endpoint ===
+@app.route("/chat", methods=["POST"])
 def chat():
     try:
         logging.info("POST /chat aufgerufen")
@@ -74,7 +73,6 @@ def chat():
         message = data["message"]
         logging.debug(f"Eingabe: {message}")
 
-        # GPT-Request
         response = client.chat.completions.create(
             model=MODEL_NAME,
             temperature=0.3,
@@ -83,13 +81,15 @@ def chat():
                 {
                     "role": "system",
                     "content": (
-                        "Du bist ein Terminassistent für die Firma LandKI."
-                        " Wenn der Nutzer seinen Vor- und Nachnamen sowie das Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'),"
-                        " extrahiere alle drei Angaben – auch dann korrekt, wenn sie in einem Satz oder nebeneinander genannt werden."
-                        "\n\nBeispiel:\nEingabe: Ali Muster 1990-01-01"
-                        "\n→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01"
-                        "\n\nReagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt."
-                        "Du darfst bei der Statusprüfung folgende Python-Funktion verwenden: get_appointment_status(Vorname, Nachname, Geburtstag im Format YYYY-MM-DD). Antworte dann dem Patienten mit dem gefundenen Termin oder gib an, dass kein Termin gefunden wurde."
+                        "Du bist ein Terminassistent für die Firma LandKI. "
+                        "Wenn der Nutzer seinen Vor- und Nachnamen sowie das Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'), "
+                        "extrahiere alle drei Angaben – auch dann korrekt, wenn sie in einem Satz oder nebeneinander genannt werden.\n\n"
+                        "Beispiel:\nEingabe: Ali Muster 1990-01-01\n"
+                        "→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01\n\n"
+                        "Reagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt.\n"
+                        "Du darfst bei der Statusprüfung folgende Python-Funktion verwenden: "
+                        "get_appointment_status(Vorname, Nachname, Geburtstag im Format YYYY-MM-DD). "
+                        "Antworte dann dem Patienten mit dem gefundenen Termin oder gib an, dass kein Termin gefunden wurde."
                     )
                 },
                 {"role": "user", "content": message}
@@ -113,6 +113,6 @@ def chat():
 def index():
     return "LandKI Bot ist online 🟢"
 
-# === Lokaler Startpunkt (für Debugging) ===
+# === Lokaler Startpunkt ===
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
