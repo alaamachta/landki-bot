@@ -1,116 +1,68 @@
-# app.py – LandKI Bot mit Termin-Stornierung inkl. SQL-Löschung & E-Mail-Bestätigung
-
-import os
-import logging
-import pyodbc
-import smtplib
-from email.mime.text import MIMEText
 from flask import Flask, request, jsonify
+import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
+import pyodbc
+from landki_utils.outlook_service import delete_event, send_mail
+from landki_utils.sql_config import get_sql_connection
 
-# === Konfiguration ===
-SQL_CONNECTION_STRING = os.getenv("SQL_CONNECTION_STRING")  # z. B. DSN oder direkter String
-SMTP_USER = os.getenv("SMTP_USER")  # z. B. AlaaMashta@LandKI.onmicrosoft.com
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # falls App-Passwort oder OAuth-Token
-SMTP_SERVER = "smtp.office365.com"
-SMTP_PORT = 587
-
-# === Flask App ===
 app = Flask(__name__)
 
-# === Logging ===
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+# Logging konfigurieren
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.info("/cancel route ready")
 
-# === Termin stornieren ===
-def cancel_appointment(first_name, last_name, birthday):
+@app.route("/cancel", methods=["POST"])
+def cancel_appointment():
     try:
-        logging.info(f"🟠 Stornierungsanfrage für {first_name} {last_name}, {birthday}")
+        data = request.get_json()
+        logger.info(f"Empfangene Stornierungsdaten: {data}")
 
-        conn = pyodbc.connect(SQL_CONNECTION_STRING)
+        first_name = data.get("first_name")
+        last_name = data.get("last_name")
+        birthday = data.get("birthday")
+
+        # Verbindung zur SQL-Datenbank herstellen
+        conn = get_sql_connection()
         cursor = conn.cursor()
 
-        # Patientendaten auslesen (E-Mail aus Tabelle holen)
+        # Termin anhand Vorname, Nachname, Geburtstag suchen
         select_query = """
-        SELECT email, appointment_time FROM appointments
+        SELECT id, email_patient, email_praxis, calendar_event_id FROM appointments
         WHERE first_name = ? AND last_name = ? AND birthday = ?
         """
         cursor.execute(select_query, (first_name, last_name, birthday))
         row = cursor.fetchone()
 
         if not row:
-            logging.warning("⚠️ Kein Eintrag gefunden für Stornierung")
-            return f"❌ Kein Termin gefunden für {first_name} {last_name} ({birthday})"
+            logger.warning("Kein passender Termin gefunden")
+            return jsonify({"success": False, "message": "Kein passender Termin gefunden."}), 404
 
-        patient_email, appointment_time = row
+        appointment_id, email_patient, email_praxis, calendar_event_id = row
+        logger.info(f"Gefundener Termin ID {appointment_id} mit Event-ID: {calendar_event_id}")
 
-        # Termin löschen
-        delete_query = """
-        DELETE FROM appointments
-        WHERE first_name = ? AND last_name = ? AND birthday = ?
-        """
-        cursor.execute(delete_query, (first_name, last_name, birthday))
+        # Kalender-Event löschen
+        if calendar_event_id:
+            delete_event(calendar_event_id)
+            logger.info(f"Kalender-Event {calendar_event_id} gelöscht")
+
+        # Termin aus SQL löschen
+        delete_query = "DELETE FROM appointments WHERE id = ?"
+        cursor.execute(delete_query, (appointment_id,))
         conn.commit()
-        conn.close()
+        logger.info(f"Termin ID {appointment_id} aus SQL gelöscht")
 
-        # Bestätigungs-E-Mail an Patient
-        subject = "Terminabsage bestätigt"
-        body = f"""
-Hallo {first_name} {last_name},
+        # E-Mail an Patient und Praxis
+        subject = "Termin wurde erfolgreich storniert"
+        content = f"Der Termin von {first_name} {last_name} wurde storniert."
 
-Ihr Termin am {appointment_time} wurde erfolgreich storniert.
+        send_mail(email_patient, subject, content)
+        send_mail(email_praxis, subject, content)
+        logger.info("Stornierungsbestätigungen per E-Mail gesendet")
 
-Mit freundlichen Grüßen
-LandKI Terminassistent
-"""
-        send_email(patient_email, subject, body)
-
-        # Benachrichtigung an Praxis
-        praxis_body = f"Termin von {first_name} {last_name} ({birthday}) wurde storniert."
-        send_email("praxis@landki.com", subject, praxis_body)
-
-        logging.info("✅ Termin erfolgreich storniert & E-Mails gesendet")
-        return f"✅ Termin erfolgreich storniert. Bestätigungen wurden per E-Mail versendet."
+        return jsonify({"success": True, "message": "Termin erfolgreich storniert."})
 
     except Exception as e:
-        logging.error(f"❌ Fehler bei Termin-Stornierung: {e}")
-        return f"❌ Fehler: {str(e)}"
-
-# === E-Mail-Versand ===
-def send_email(to, subject, body):
-    try:
-        msg = MIMEText(body, "plain", "utf-8")
-        msg["Subject"] = subject
-        msg["From"] = SMTP_USER
-        msg["To"] = to
-
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_USER, to, msg.as_string())
-        logging.info(f"📧 E-Mail gesendet an: {to}")
-
-    except Exception as e:
-        logging.error(f"❌ Fehler beim E-Mail-Versand an {to}: {e}")
-
-# === Beispiel-Endpunkt zum Testen ===
-@app.route("/cancel", methods=["POST"])
-def api_cancel():
-    data = request.get_json()
-    first_name = data.get("first_name")
-    last_name = data.get("last_name")
-    birthday = data.get("birthday")  # Format: YYYY-MM-DD
-
-    if not all([first_name, last_name, birthday]):
-        return jsonify({"error": "first_name, last_name und birthday erforderlich"}), 400
-
-    result = cancel_appointment(first_name, last_name, birthday)
-    return jsonify({"reply": result})
-
-# === Haupt-Chat-Endpunkt Dummy ===
-@app.route("/chat", methods=["POST"])
-def chat():
-    return jsonify({"reply": "Noch nicht implementiert"})
-
-# === Start ===
-if __name__ == "__main__":
-    app.run(debug=True)
+        logger.exception("Fehler beim Stornieren des Termins")
+        return jsonify({"success": False, "message": str(e)}), 500
