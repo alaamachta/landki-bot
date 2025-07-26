@@ -6,7 +6,6 @@ from flask_cors import CORS
 from datetime import datetime
 import pytz
 from openai import AzureOpenAI, OpenAIError
-import pyodbc  # SQL-Unterstützung
 
 # === Flask App Setup ===
 app = Flask(__name__)
@@ -30,36 +29,6 @@ client = AzureOpenAI(
 )
 MODEL_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
-# === SQL Setup ===
-sql_server = os.environ.get("SQL_SERVER")
-sql_db = os.environ.get("SQL_DATABASE")
-sql_user = os.environ.get("SQL_USER")
-sql_pwd = os.environ.get("SQL_PASSWORD")
-conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={sql_server};DATABASE={sql_db};UID={sql_user};PWD={sql_pwd};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-
-def check_appointment(first_name, last_name, birthday):
-    try:
-        with pyodbc.connect(conn_str) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT appointment_date, appointment_time, symptoms, address
-                FROM appointments
-                WHERE first_name = ? AND last_name = ? AND birthday = ?
-            """, first_name, last_name, birthday)
-            row = cursor.fetchone()
-            if row:
-                return {
-                    "date": row[0],
-                    "time": row[1],
-                    "symptoms": row[2],
-                    "address": row[3]
-                }
-            else:
-                return None
-    except Exception as e:
-        logging.error("SQL-Fehler: %s", e)
-        return None
-
 # === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -79,29 +48,23 @@ def chat():
             temperature=0.3,
             max_tokens=1000,
             messages=[
-                {"role": "system", "content": """
-                    Du bist ein medizinischer KI-Assistent.
-                    Wenn der Nutzer nach seinem Termin fragt, fordere ihn auf,
-                    Vorname, Nachname und Geburtstag anzugeben.
-                    Sobald du alle 3 hast, formatiere sie wie folgt:
-                    /check_status|Vorname|Nachname|YYYY-MM-DD
-                """},
+                {
+                    "role": "system",
+                    "content": (
+                        "Du bist ein Terminassistent für die Firma LandKI."
+                        " Wenn der Nutzer seinen Vor- und Nachnamen sowie das Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'),"
+                        " extrahiere alle drei Angaben – auch dann korrekt, wenn sie in einem Satz oder nebeneinander genannt werden."
+                        "\n\nBeispiel:\nEingabe: Ali Muster 1990-01-01"
+                        "\n→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01"
+                        "\n\nReagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt."
+                    )
+                },
                 {"role": "user", "content": message}
             ]
         )
 
-        gpt_answer = response.choices[0].message.content.strip()
+        gpt_answer = response.choices[0].message.content
         logging.info(f"Antwort: {gpt_answer}")
-
-        if gpt_answer.startswith("/check_status"):
-            _, first, last, bday = gpt_answer.split("|")
-            result = check_appointment(first.strip(), last.strip(), bday.strip())
-            if result:
-                antwort = f"📅 Ihr Termin ist am <b>{result['date']} um {result['time']}</b> wegen <b>{result['symptoms']}</b>, Adresse: <b>{result['address']}</b>."
-            else:
-                antwort = "⚠️ Kein Termin gefunden. Bitte prüfen Sie Ihre Eingaben."
-            return jsonify({"reply_html": antwort})
-
         return jsonify({"response": gpt_answer})
 
     except OpenAIError as e:
@@ -117,6 +80,6 @@ def chat():
 def index():
     return "LandKI Bot ist online 🟢"
 
-# === Lokaler Startpunkt ===
+# === Lokaler Startpunkt (für Debugging) ===
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
