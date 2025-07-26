@@ -1,106 +1,121 @@
-# ✅ app.py – Vollständige Version für Termin-Stornierung (Outlook + SQL + E-Mail)
-# -------------------------------------------------------------
-# Unterstützt: Termin-Stornierung per POST /cancel
-# Entfernt Eintrag aus Outlook + SQL + sendet E-Mails an Patient und Praxis
-# Logging ins Terminal + automatische Zeitzone "Europe/Berlin"
-
-from flask import Flask, request, jsonify
 import os
+import json
 import logging
-import smtplib
-import pytz
-from datetime import datetime
+import openai
 import pyodbc
+import smtplib
+from flask import Flask, request, jsonify
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from zoneinfo import ZoneInfo
 
+# Flask Setup
 app = Flask(__name__)
 
-# 🧠 Konfiguration aus Umgebungsvariablen laden
+# Logging Setup
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s %(levelname)s:%(message)s")
+logger = logging.getLogger(__name__)
+
+# Zeitzone auf Europe/Berlin setzen
+TZ = ZoneInfo("Europe/Berlin")
+
+# SQL-Verbindungsdaten aus Umgebungsvariablen
 SQL_SERVER = os.getenv("SQL_SERVER")
 SQL_DATABASE = os.getenv("SQL_DATABASE")
 SQL_USERNAME = os.getenv("SQL_USERNAME")
 SQL_PASSWORD = os.getenv("SQL_PASSWORD")
-SMTP_ACCOUNT = os.getenv("SMTP_ACCOUNT")  # z. B. AlaaMashta@LandKI.onmicrosoft.com
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # OAuth-Token oder App-Passwort
-SMTP_SERVER = "smtp.office365.com"
-SMTP_PORT = 587
-TZ = pytz.timezone("Europe/Berlin")
 
-# 🧠 Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S', handlers=[logging.StreamHandler()])
+# SQL-Verbindung
+connection_string = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD}"
 
-# 📦 SQL-Verbindung vorbereiten
-conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30"
+def insert_appointment(data):
+    try:
+        with pyodbc.connect(connection_string) as conn:
+            cursor = conn.cursor()
+            logger.debug("SQL-Verbindung erfolgreich aufgebaut.")
 
-@app.route("/cancel", methods=["POST"])
-def cancel_appointment():
+            query = """
+            INSERT INTO appointments (
+                first_name, last_name, birthdate, phone, email, symptom, symptom_duration, address,
+                appointment_start, appointment_end, created_at, company_code, bot_origin,
+                service_type, note_internal
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+
+            now = datetime.now(TZ)
+            start = now + timedelta(days=2)
+            end = start + timedelta(minutes=15)
+
+            cursor.execute(query, (
+                data.get("first_name"),
+                data.get("last_name"),
+                data.get("birthdate"),  # <-- birthdate statt birthday
+                data.get("phone"),
+                data.get("email"),
+                data.get("symptom"),
+                data.get("symptom_duration"),
+                data.get("address"),
+                start,
+                end,
+                now,
+                data.get("company_code"),
+                data.get("bot_origin"),
+                data.get("service_type"),
+                data.get("note_internal")
+            ))
+            conn.commit()
+            logger.info("✅ SQL-Eintrag erfolgreich gespeichert.")
+            return True
+    except Exception as e:
+        logger.error(f"❌ Fehler beim SQL-Insert: {str(e)}")
+        return False
+
+def send_email(to_email, subject, body):
+    try:
+        from_email = "AlaaMashta@LandKI.onmicrosoft.com"
+
+        message = MIMEMultipart()
+        message["From"] = from_email
+        message["To"] = to_email
+        message["Subject"] = subject
+        message.attach(MIMEText(body, "plain"))
+
+        smtp_server = smtplib.SMTP("smtp.office365.com", 587)
+        smtp_server.starttls()
+        smtp_server.login(from_email, os.getenv("EMAIL_PASSWORD"))
+        smtp_server.send_message(message)
+        smtp_server.quit()
+
+        logger.info(f"📧 E-Mail gesendet an: {to_email}")
+    except Exception as e:
+        logger.error(f"❌ Fehler beim E-Mail-Versand: {str(e)}")
+
+@app.route("/book", methods=["POST"])
+def book():
     try:
         data = request.get_json()
-        logging.info(f"POST /cancel received: {data}")
+        logger.debug(f"📥 Eingehende Daten: {data}")
 
-        first_name = data.get("first_name")
-        last_name = data.get("last_name")
-        birthday = data.get("birthday")
+        if not data.get("first_name") or not data.get("birthdate"):
+            return jsonify({"error": "Vorname und Geburtsdatum sind Pflichtfelder."}), 400
 
-        if not all([first_name, last_name, birthday]):
-            return jsonify({"error": "Fehlende Eingabedaten."}), 400
+        success = insert_appointment(data)
 
-        # 📌 Verbindung zur Datenbank herstellen
-        conn = pyodbc.connect(conn_str)
-        cursor = conn.cursor()
+        if success:
+            email_body = f"Hallo {data['first_name']},\n\nIhr Termin wurde erfolgreich gebucht.\n\nViele Grüße\nIhr LandKI-Team"
+            send_email(data["email"], "Terminbestätigung", email_body)
 
-        # 🔎 Eintrag prüfen
-        cursor.execute("SELECT email, praxis_email FROM appointments WHERE first_name=? AND last_name=? AND birthday=?", first_name, last_name, birthday)
-        result = cursor.fetchone()
+            praxis_mail = "admin@landki.com"
+            praxis_body = f"Termin für {data['first_name']} {data['last_name']} wurde gebucht."
+            send_email(praxis_mail, "Neuer Termin eingetragen", praxis_body)
 
-        if not result:
-            logging.warning("Kein passender Termin gefunden.")
-            return jsonify({"message": "Kein passender Termin gefunden."}), 404
-
-        patient_email, praxis_email = result
-
-        # 🗑️ Termin löschen
-        cursor.execute("DELETE FROM appointments WHERE first_name=? AND last_name=? AND birthday=?", first_name, last_name, birthday)
-        conn.commit()
-        cursor.close()
-        conn.close()
-        logging.info("SQL-Eintrag gelöscht.")
-
-        # 📧 E-Mails senden
-        send_cancellation_email(patient_email, praxis_email, first_name, last_name, birthday)
-
-        return jsonify({"message": "Termin erfolgreich storniert."})
-
+            return jsonify({"message": "✅ Termin erfolgreich gebucht."})
+        else:
+            return jsonify({"error": "❌ Fehler beim Speichern des Termins."}), 500
     except Exception as e:
-        logging.exception("Fehler bei Termin-Stornierung")
-        return jsonify({"error": str(e)}), 500
-
-def send_cancellation_email(patient_email, praxis_email, first_name, last_name, birthday):
-    try:
-        subject = "Termin-Stornierung bestätigt"
-        message = f"""
-        Der Termin von {first_name} {last_name} (Geburtstag: {birthday}) wurde erfolgreich storniert.
-
-        Dies ist eine automatische Bestätigung von LandKI.
-        """
-        msg = MIMEMultipart()
-        msg['From'] = SMTP_ACCOUNT
-        msg['To'] = patient_email
-        msg['Cc'] = praxis_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(message, 'plain'))
-
-        smtp = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        smtp.starttls()
-        smtp.login(SMTP_ACCOUNT, SMTP_PASSWORD)
-        smtp.sendmail(SMTP_ACCOUNT, [patient_email, praxis_email], msg.as_string())
-        smtp.quit()
-
-        logging.info(f"E-Mail gesendet an {patient_email} & {praxis_email}")
-
-    except Exception as e:
-        logging.exception("E-Mail-Versand fehlgeschlagen")
+        logger.error(f"❌ Unerwarteter Fehler: {str(e)}")
+        return jsonify({"error": "❌ Serverfehler"}), 500
 
 if __name__ == "__main__":
     app.run(debug=True)
