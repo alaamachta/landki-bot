@@ -68,7 +68,7 @@ def cancel_appointment(first_name, last_name, birthday):
             timeout=5
         )
         cursor = conn.cursor()
-        
+
         # Prüfen ob Termin vorhanden ist
         check_query = """
             SELECT appointment_start FROM dbo.appointments
@@ -76,7 +76,7 @@ def cancel_appointment(first_name, last_name, birthday):
         """
         cursor.execute(check_query, (first_name, last_name, birthday))
         row = cursor.fetchone()
-        
+
         if not row:
             return "Es liegt kein Termin unter diesem Namen vor."
 
@@ -94,7 +94,6 @@ def cancel_appointment(first_name, last_name, birthday):
     except Exception as e:
         logging.exception("SQL-Stornierungsfehler:")
         return "Es gab ein Problem beim Stornieren des Termins. Bitte versuchen Sie es später erneut."
-
 
 # === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
@@ -118,25 +117,18 @@ def chat():
                     "role": "system",
                     "content": (
                         "Du bist ein Terminassistent für die Firma LandKI.\n"
-                        "Wenn der Nutzer seinen Vor- und Nachnamen sowie das Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'), "
-                        "extrahiere alle drei Angaben – auch dann korrekt, wenn sie in einem Satz oder nebeneinander genannt werden.\n\n"
-    
-                        "Beispiel:\n"
-                        "Eingabe: Ali Muster 1990-01-01\n"
-                        "→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01\n\n"
-
-                        "Reagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt.\n\n"
-
-                        "🟦 Wenn der Nutzer den **Status prüfen** will, darfst du folgende Python-Funktion verwenden:\n"
-                        "→ `get_appointment_status(Vorname, Nachname, Geburtstag)`\n\n"
-
-                        "🟥 Wenn der Nutzer einen **Termin stornieren** möchte, verwende:\n"
-                        "→ `cancel_appointment(Vorname, Nachname, Geburtstag)`\n\n"
-
-                        "Antworten immer freundlich und im Stil eines professionellen Assistenten. "
-                        "Gib den Ergebnistext der Funktion direkt als Antwort aus."
+                        "Der Nutzer kann entweder:\n"
+                        "🟢 einen Termin buchen\n"
+                        "🟦 den Status prüfen\n"
+                        "🟥 einen Termin stornieren\n\n"
+                        "Wenn der Nutzer seinen Vor- und Nachnamen **und** sein Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'), "
+                        "extrahiere alle 3 Angaben direkt – auch wenn sie in einem Satz oder nebeneinander stehen.\n\n"
+                        "Sobald alle Angaben vorhanden sind, führe direkt die passende Funktion aus – **ohne weitere Rückfragen**.\n\n"
+                        "🟦 Status prüfen → `get_appointment_status(Vorname, Nachname, Geburtstag)`\n"
+                        "🟥 Termin stornieren → `cancel_appointment(Vorname, Nachname, Geburtstag)`\n\n"
+                        "Wenn du alle Angaben erhalten hast und der Nutzer danach \"stornieren\" schreibt, führe sofort die Funktion aus – ohne nochmal nachzufragen.\n"
+                        "Antworte immer professionell, klar und direkt."
                     )
-
                 },
                 {"role": "user", "content": message}
             ]
