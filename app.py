@@ -1,132 +1,161 @@
 import os
 import logging
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import openai
 import smtplib
+import json
+import pytz
 import pyodbc
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
-timezone = 'Europe/Berlin'
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from msal import ConfidentialClientApplication
 
-# Initialisiere Logging mit WebApp-Loglevel
-logging.basicConfig(level=os.getenv("WEBSITE_LOGGING_LEVEL", "INFO"))
+# Konfiguration
+openai.api_key = os.environ.get("OPENAI_API_KEY")
+AZURE_SQL_SERVER = os.environ.get("AZURE_SQL_SERVER")
+AZURE_SQL_DB = os.environ.get("AZURE_SQL_DB")
+AZURE_SQL_USER = os.environ.get("AZURE_SQL_USER")
+AZURE_SQL_PASSWORD = os.environ.get("AZURE_SQL_PASSWORD")
+SMTP_CLIENT_ID = os.environ.get("SMTP_CLIENT_ID")
+SMTP_CLIENT_SECRET = os.environ.get("SMTP_CLIENT_SECRET")
+SMTP_TENANT_ID = os.environ.get("SMTP_TENANT_ID")
+SMTP_SENDER = os.environ.get("SMTP_SENDER")
+SMTP_RECIPIENT = os.environ.get("SMTP_RECIPIENT")
+LOGGING_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO")
+
+# Logging
+logging.basicConfig(level=LOGGING_LEVEL, format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# Flask App initialisieren
+# Flask App
 app = Flask(__name__)
 CORS(app)
 
-# GPT-Konfiguration
-openai.api_type = "azure"
-openai.api_key = os.getenv("AZURE_OPENAI_KEY")
-openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
-openai.api_version = os.getenv("OPENAI_API_VERSION", "2024-05-13")
-
-deployment_id = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-
-# SQL-Verbindung vorbereiten
-sql_conn_str = os.getenv("AZURE_SQL_CONNECTION_STRING")
-
-def insert_appointment_sql(first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address):
+def send_confirmation_email(patient_email, subject, body):
     try:
-        conn = pyodbc.connect(sql_conn_str)
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS appointments (
-                id INT IDENTITY(1,1) PRIMARY KEY,
-                first_name NVARCHAR(100),
-                last_name NVARCHAR(100),
-                birthdate DATE,
-                phone NVARCHAR(50),
-                email NVARCHAR(100),
-                symptoms NVARCHAR(MAX),
-                symptom_duration NVARCHAR(100),
-                address NVARCHAR(MAX),
-                created_at DATETIME DEFAULT GETDATE()
+        authority = f"https://login.microsoftonline.com/{SMTP_TENANT_ID}"
+        app_msal = ConfidentialClientApplication(
+            SMTP_CLIENT_ID,
+            authority=authority,
+            client_credential=SMTP_CLIENT_SECRET,
+        )
+        token_response = app_msal.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+        access_token = token_response.get("access_token")
+
+        if not access_token:
+            raise Exception("Failed to obtain access token for SMTP")
+
+        message = MIMEMultipart()
+        message["Subject"] = subject
+        message["From"] = SMTP_SENDER
+        message["To"] = patient_email
+        message.attach(MIMEText(body, "plain"))
+
+        smtp = smtplib.SMTP("smtp.office365.com", 587)
+        smtp.starttls()
+        smtp.login(SMTP_SENDER, access_token)
+        smtp.sendmail(SMTP_SENDER, patient_email, message.as_string())
+        smtp.quit()
+
+        logger.info(f"E-Mail an {patient_email} gesendet.")
+    except Exception as e:
+        logger.error(f"E-Mail-Fehler: {e}")
+
+def insert_appointment_to_sql(data):
+    try:
+        conn_str = (
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={AZURE_SQL_SERVER};DATABASE={AZURE_SQL_DB};"
+            f"UID={AZURE_SQL_USER};PWD={AZURE_SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no"
+        )
+        with pyodbc.connect(conn_str) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS appointments (
+                    id INT PRIMARY KEY IDENTITY(1,1),
+                    first_name NVARCHAR(100),
+                    last_name NVARCHAR(100),
+                    birthday DATE,
+                    phone NVARCHAR(50),
+                    email NVARCHAR(100),
+                    symptoms NVARCHAR(500),
+                    duration NVARCHAR(100),
+                    address NVARCHAR(300),
+                    appointment_start DATETIME,
+                    appointment_end DATETIME
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO appointments (first_name, last_name, birthday, phone, email, symptoms, duration, address, appointment_start, appointment_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                data["first_name"], data["last_name"], data["birthday"],
+                data["phone"], data["email"], data["symptoms"], data["duration"],
+                data["address"], data["appointment_start"], data["appointment_end"]
             )
-        """)
-        cursor.execute("""
-            INSERT INTO appointments (first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address))
-        conn.commit()
-        cursor.close()
-        conn.close()
-        logger.info("✅ SQL Insert erfolgreich für %s %s", first_name, last_name)
-        return True
+            conn.commit()
+        logger.info("SQL-Eintrag erfolgreich.")
     except Exception as e:
-        logger.error("❌ SQL Insert Fehler: %s", str(e))
-        return False
+        logger.error(f"SQL-Fehler: {e}")
 
-# E-Mail Versandfunktion
-from_email = os.getenv("EMAIL_SENDER")  # z. B. AlaaMashta@landki.onmicrosoft.com
-
-def send_email(subject, body, recipient):
-    try:
-        msg = MIMEText(body, "plain")
-        msg["Subject"] = subject
-        msg["From"] = from_email
-        msg["To"] = recipient
-
-        with smtplib.SMTP("smtp.office365.com", 587) as server:
-            server.starttls()
-            server.login(from_email, os.getenv("MS_CLIENT_SECRET"))  # Nur temporär ohne OAuth
-            server.sendmail(from_email, [recipient], msg.as_string())
-
-        logger.info("✅ E-Mail erfolgreich gesendet an %s", recipient)
-        return True
-    except Exception as e:
-        logger.error("❌ Fehler beim Senden der E-Mail: %s", str(e))
-        return False
-
-# Route für Terminbuchung
 @app.route("/book-appointment", methods=["POST"])
 def book_appointment():
-    data = request.json
-    logger.info("📥 Terminbuchung erhalten: %s", data)
+    try:
+        data = request.get_json()
+        insert_appointment_to_sql(data)
 
-    first_name = data.get("first_name")
-    last_name = data.get("last_name")
-    birthdate = data.get("birthdate")
-    phone = data.get("phone")
-    email = data.get("email")
-    symptoms = data.get("symptoms")
-    symptom_duration = data.get("symptom_duration")
-    address = data.get("address")
+        subject = "Terminbestätigung – LandKI"
+        body = f"""
+Sehr geehrte/r {data['first_name']} {data['last_name']},
 
-    # SQL speichern
-    success = insert_appointment_sql(first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address)
+Ihr Termin wurde erfolgreich gebucht:
+Datum: {data['appointment_start']} bis {data['appointment_end']}
+Symptome: {data['symptoms']}
 
-    # E-Mail an Patient senden
-    subject = "Terminbestätigung - LandKI"
-    body = f"""
-Hallo {first_name} {last_name},
+Adresse:
+{data['address']}
 
-vielen Dank für Ihre Terminanfrage.
+Vielen Dank für Ihre Buchung!
+Ihr LandKI-Team
+        """
+        send_confirmation_email(data["email"], subject, body)
+        send_confirmation_email(SMTP_RECIPIENT, "Neue Terminbuchung", body)
 
-🗓️ Geburtsdatum: {birthdate}
-📱 Telefon: {phone}
-📩 E-Mail: {email}
-📍 Adresse: {address}
+        return jsonify({"status": "success", "message": "Terminbuchung empfangen"})
+    except Exception as e:
+        logger.error(f"Fehler bei Terminbuchung: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-🩺 Symptome: {symptoms}
-⏱️ Dauer: {symptom_duration}
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        message = request.json.get("message", "")
+        logger.info(f"Nachricht erhalten: {message}")
 
-Wir bestätigen Ihnen den Eingang und melden uns in Kürze mit einem konkreten Terminvorschlag.
+        system_prompt = """
+Du bist der freundliche Assistent von LandKI. Wenn jemand Hilfe braucht, begrüßt du die Person und bietest diese Optionen:
 
-Viele Grüße
-Ihr LandKI Team
-    """
-    send_email(subject, body, email)
+🟢 Termin buchen
+🔵 Terminstatus prüfen
+🔴 Termin stornieren
 
-    return jsonify({"status": "success", "message": "Terminbuchung empfangen"})
+Frage am Anfang z. B.: Wie kann ich Ihnen helfen? Möchten Sie einen Termin buchen oder ändern?
+        """
+        completion = openai.ChatCompletion.create(
+            engine="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            temperature=0.5
+        )
+        reply = completion.choices[0].message.content
+        return jsonify({"reply": reply})
 
-# Test-Route
-@app.route("/", methods=["GET"])
-def home():
-    return "LandKI Bot is running."
+    except Exception as e:
+        logger.error(f"Fehler bei GPT-Antwort: {e}")
+        return jsonify({"error": "Fehler beim Verarbeiten der Anfrage."}), 500
 
-# Start App
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
