@@ -162,3 +162,7 @@ def book():
         logger.error("❌ Fehler bei Buchung:")
         logger.error(traceback.format_exc())
         return jsonify({"error": "Interner Fehler"}), 500
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)  # ✅ Azure erwartet Port 8000
+
