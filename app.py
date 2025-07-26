@@ -26,7 +26,7 @@ logging.Formatter.converter = lambda *args: datetime.now(tz).timetuple()
 client = AzureOpenAI(
     api_key=os.environ.get("AZURE_OPENAI_KEY"),
     azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT"),
-    api_version=os.environ.get("OPENAI_API_VERSION", "2024-02-01")
+    api_version=os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 )
 MODEL_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
