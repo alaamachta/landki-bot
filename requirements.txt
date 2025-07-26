@@ -1,18 +1,20 @@
 flask>=2.2.0
 flask-cors>=3.0.10
 gunicorn>=20.1.0
-openai>=1.30.1
-httpx>=0.24.1
+
+openai>=1.30.1             # AzureOpenAI-SDK
 requests>=2.31.0
-azure-search-documents==11.4.0
-azure-core==1.29.4
-azure-identity==1.15.0
-markdown2==2.4.12
-colorlog>=6.7.0
-msal>=1.24.0
-pytz
-pyodbc>=5.1.0
-python-dateutil>=2.8.2
+httpx>=0.24.1              # für eventuelle GPT-Kompatibilität
+
+markdown2>=2.4.12
+colorlog>=6.7.0            # farbige Logs im Terminal
+
+msal>=1.24.0               # Microsoft Authentifizierung
+pyodbc>=5.1.0              # SQL-Zugriff
+pytz                      # Zeitzonen (z. B. Europe/Berlin)
+python-dateutil>=2.8.2     # ISO-Zeitumwandlung etc.
+
+# Optional für Azure Monitoring (falls du das aktivierst)
 opencensus-ext-azure
 opencensus-ext-logging
 opencensus-ext-flask
