@@ -1,68 +1,106 @@
+# ✅ app.py – Vollständige Version für Termin-Stornierung (Outlook + SQL + E-Mail)
+# -------------------------------------------------------------
+# Unterstützt: Termin-Stornierung per POST /cancel
+# Entfernt Eintrag aus Outlook + SQL + sendet E-Mails an Patient und Praxis
+# Logging ins Terminal + automatische Zeitzone "Europe/Berlin"
+
 from flask import Flask, request, jsonify
+import os
 import logging
+import smtplib
+import pytz
 from datetime import datetime
-from zoneinfo import ZoneInfo
 import pyodbc
-from landki_utils.outlook_service import delete_event, send_mail
-from landki_utils.sql_config import get_sql_connection
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 app = Flask(__name__)
 
-# Logging konfigurieren
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-logger.info("/cancel route ready")
+# 🧠 Konfiguration aus Umgebungsvariablen laden
+SQL_SERVER = os.getenv("SQL_SERVER")
+SQL_DATABASE = os.getenv("SQL_DATABASE")
+SQL_USERNAME = os.getenv("SQL_USERNAME")
+SQL_PASSWORD = os.getenv("SQL_PASSWORD")
+SMTP_ACCOUNT = os.getenv("SMTP_ACCOUNT")  # z. B. AlaaMashta@LandKI.onmicrosoft.com
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # OAuth-Token oder App-Passwort
+SMTP_SERVER = "smtp.office365.com"
+SMTP_PORT = 587
+TZ = pytz.timezone("Europe/Berlin")
+
+# 🧠 Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%H:%M:%S', handlers=[logging.StreamHandler()])
+
+# 📦 SQL-Verbindung vorbereiten
+conn_str = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30"
 
 @app.route("/cancel", methods=["POST"])
 def cancel_appointment():
     try:
         data = request.get_json()
-        logger.info(f"Empfangene Stornierungsdaten: {data}")
+        logging.info(f"POST /cancel received: {data}")
 
         first_name = data.get("first_name")
         last_name = data.get("last_name")
         birthday = data.get("birthday")
 
-        # Verbindung zur SQL-Datenbank herstellen
-        conn = get_sql_connection()
+        if not all([first_name, last_name, birthday]):
+            return jsonify({"error": "Fehlende Eingabedaten."}), 400
+
+        # 📌 Verbindung zur Datenbank herstellen
+        conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
 
-        # Termin anhand Vorname, Nachname, Geburtstag suchen
-        select_query = """
-        SELECT id, email_patient, email_praxis, calendar_event_id FROM appointments
-        WHERE first_name = ? AND last_name = ? AND birthday = ?
-        """
-        cursor.execute(select_query, (first_name, last_name, birthday))
-        row = cursor.fetchone()
+        # 🔎 Eintrag prüfen
+        cursor.execute("SELECT email, praxis_email FROM appointments WHERE first_name=? AND last_name=? AND birthday=?", first_name, last_name, birthday)
+        result = cursor.fetchone()
 
-        if not row:
-            logger.warning("Kein passender Termin gefunden")
-            return jsonify({"success": False, "message": "Kein passender Termin gefunden."}), 404
+        if not result:
+            logging.warning("Kein passender Termin gefunden.")
+            return jsonify({"message": "Kein passender Termin gefunden."}), 404
 
-        appointment_id, email_patient, email_praxis, calendar_event_id = row
-        logger.info(f"Gefundener Termin ID {appointment_id} mit Event-ID: {calendar_event_id}")
+        patient_email, praxis_email = result
 
-        # Kalender-Event löschen
-        if calendar_event_id:
-            delete_event(calendar_event_id)
-            logger.info(f"Kalender-Event {calendar_event_id} gelöscht")
-
-        # Termin aus SQL löschen
-        delete_query = "DELETE FROM appointments WHERE id = ?"
-        cursor.execute(delete_query, (appointment_id,))
+        # 🗑️ Termin löschen
+        cursor.execute("DELETE FROM appointments WHERE first_name=? AND last_name=? AND birthday=?", first_name, last_name, birthday)
         conn.commit()
-        logger.info(f"Termin ID {appointment_id} aus SQL gelöscht")
+        cursor.close()
+        conn.close()
+        logging.info("SQL-Eintrag gelöscht.")
 
-        # E-Mail an Patient und Praxis
-        subject = "Termin wurde erfolgreich storniert"
-        content = f"Der Termin von {first_name} {last_name} wurde storniert."
+        # 📧 E-Mails senden
+        send_cancellation_email(patient_email, praxis_email, first_name, last_name, birthday)
 
-        send_mail(email_patient, subject, content)
-        send_mail(email_praxis, subject, content)
-        logger.info("Stornierungsbestätigungen per E-Mail gesendet")
-
-        return jsonify({"success": True, "message": "Termin erfolgreich storniert."})
+        return jsonify({"message": "Termin erfolgreich storniert."})
 
     except Exception as e:
-        logger.exception("Fehler beim Stornieren des Termins")
-        return jsonify({"success": False, "message": str(e)}), 500
+        logging.exception("Fehler bei Termin-Stornierung")
+        return jsonify({"error": str(e)}), 500
+
+def send_cancellation_email(patient_email, praxis_email, first_name, last_name, birthday):
+    try:
+        subject = "Termin-Stornierung bestätigt"
+        message = f"""
+        Der Termin von {first_name} {last_name} (Geburtstag: {birthday}) wurde erfolgreich storniert.
+
+        Dies ist eine automatische Bestätigung von LandKI.
+        """
+        msg = MIMEMultipart()
+        msg['From'] = SMTP_ACCOUNT
+        msg['To'] = patient_email
+        msg['Cc'] = praxis_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(message, 'plain'))
+
+        smtp = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        smtp.starttls()
+        smtp.login(SMTP_ACCOUNT, SMTP_PASSWORD)
+        smtp.sendmail(SMTP_ACCOUNT, [patient_email, praxis_email], msg.as_string())
+        smtp.quit()
+
+        logging.info(f"E-Mail gesendet an {patient_email} & {praxis_email}")
+
+    except Exception as e:
+        logging.exception("E-Mail-Versand fehlgeschlagen")
+
+if __name__ == "__main__":
+    app.run(debug=True)
