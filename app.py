@@ -1,149 +1,132 @@
 import os
 import logging
-import json
-import uuid
-import requests
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, session, redirect, url_for
+from flask import Flask, request, jsonify
 from flask_cors import CORS
-import msal
+import openai
+import smtplib
 import pyodbc
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+timezone = 'Europe/Berlin'
 
-# Initialisiere Flask
-app = Flask(__name__)
-CORS(app)
-app.secret_key = os.environ.get("SECRET_KEY", str(uuid.uuid4()))
-
-# Logging-Konfiguration
-logging.basicConfig(
-    level=os.getenv("WEBSITE_LOGGING_LEVEL", "INFO"),
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+# Initialisiere Logging mit WebApp-Loglevel
+logging.basicConfig(level=os.getenv("WEBSITE_LOGGING_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-# SQL-Konfiguration
-SQL_CONNECTION_STRING = os.environ.get("AZURE_SQL_CONNECTION_STRING")
+# Flask App initialisieren
+app = Flask(__name__)
+CORS(app)
 
-# E-Mail-Konfiguration (später)
-EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
+# GPT-Konfiguration
+openai.api_type = "azure"
+openai.api_key = os.getenv("AZURE_OPENAI_KEY")
+openai.api_base = os.getenv("AZURE_OPENAI_ENDPOINT")
+openai.api_version = os.getenv("OPENAI_API_VERSION", "2024-05-13")
 
+deployment_id = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+
+# SQL-Verbindung vorbereiten
+sql_conn_str = os.getenv("AZURE_SQL_CONNECTION_STRING")
+
+def insert_appointment_sql(first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address):
+    try:
+        conn = pyodbc.connect(sql_conn_str)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS appointments (
+                id INT IDENTITY(1,1) PRIMARY KEY,
+                first_name NVARCHAR(100),
+                last_name NVARCHAR(100),
+                birthdate DATE,
+                phone NVARCHAR(50),
+                email NVARCHAR(100),
+                symptoms NVARCHAR(MAX),
+                symptom_duration NVARCHAR(100),
+                address NVARCHAR(MAX),
+                created_at DATETIME DEFAULT GETDATE()
+            )
+        """)
+        cursor.execute("""
+            INSERT INTO appointments (first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address))
+        conn.commit()
+        cursor.close()
+        conn.close()
+        logger.info("✅ SQL Insert erfolgreich für %s %s", first_name, last_name)
+        return True
+    except Exception as e:
+        logger.error("❌ SQL Insert Fehler: %s", str(e))
+        return False
+
+# E-Mail Versandfunktion
+from_email = os.getenv("EMAIL_SENDER")  # z. B. AlaaMashta@landki.onmicrosoft.com
+
+def send_email(subject, body, recipient):
+    try:
+        msg = MIMEText(body, "plain")
+        msg["Subject"] = subject
+        msg["From"] = from_email
+        msg["To"] = recipient
+
+        with smtplib.SMTP("smtp.office365.com", 587) as server:
+            server.starttls()
+            server.login(from_email, os.getenv("MS_CLIENT_SECRET"))  # Nur temporär ohne OAuth
+            server.sendmail(from_email, [recipient], msg.as_string())
+
+        logger.info("✅ E-Mail erfolgreich gesendet an %s", recipient)
+        return True
+    except Exception as e:
+        logger.error("❌ Fehler beim Senden der E-Mail: %s", str(e))
+        return False
+
+# Route für Terminbuchung
 @app.route("/book-appointment", methods=["POST"])
 def book_appointment():
-    try:
-        data = request.get_json()
-        logger.info("📥 Buchungsanfrage empfangen: %s", data)
+    data = request.json
+    logger.info("📥 Terminbuchung erhalten: %s", data)
 
-        # Schritt 1: Patientendaten auslesen
-        first_name = data.get("first_name")
-        last_name = data.get("last_name")
-        phone = data.get("phone")
-        email = data.get("email")
-        birthday = data.get("birthday")
-        symptoms = data.get("symptoms")
-        duration = data.get("duration")
-        address = data.get("address")
-        appointment_start = data.get("appointment_start")
-        appointment_end = data.get("appointment_end")
+    first_name = data.get("first_name")
+    last_name = data.get("last_name")
+    birthdate = data.get("birthdate")
+    phone = data.get("phone")
+    email = data.get("email")
+    symptoms = data.get("symptoms")
+    symptom_duration = data.get("symptom_duration")
+    address = data.get("address")
 
-        # Schritt 2: In SQL speichern
-        try:
-            conn = pyodbc.connect(SQL_CONNECTION_STRING)
-            cursor = conn.cursor()
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS appointments (
-                    id INT IDENTITY(1,1) PRIMARY KEY,
-                    first_name NVARCHAR(100),
-                    last_name NVARCHAR(100),
-                    phone NVARCHAR(50),
-                    email NVARCHAR(255),
-                    birthday NVARCHAR(50),
-                    symptoms NVARCHAR(MAX),
-                    duration NVARCHAR(50),
-                    address NVARCHAR(255),
-                    appointment_start NVARCHAR(100),
-                    appointment_end NVARCHAR(100),
-                    created_at DATETIME DEFAULT GETDATE()
-                )
-            """)
-            cursor.execute("""
-                INSERT INTO appointments (
-                    first_name, last_name, phone, email, birthday,
-                    symptoms, duration, address,
-                    appointment_start, appointment_end
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                first_name, last_name, phone, email, birthday,
-                symptoms, duration, address,
-                appointment_start, appointment_end
-            ))
-            conn.commit()
-            conn.close()
-            logger.info("✅ Termin in SQL gespeichert")
-        except Exception as sql_error:
-            logger.error(f"❌ Fehler beim SQL-Speichern: {sql_error}")
+    # SQL speichern
+    success = insert_appointment_sql(first_name, last_name, birthdate, phone, email, symptoms, symptom_duration, address)
 
-        # Schritt 3: Outlook-Termin eintragen
-        try:
-            authority = f"https://login.microsoftonline.com/{os.environ['MS_TENANT_ID']}"
-            app_msal = msal.ConfidentialClientApplication(
-                client_id=os.environ['MS_CLIENT_ID'],
-                client_credential=os.environ['MS_CLIENT_SECRET'],
-                authority=authority
-            )
-            scopes = ["https://graph.microsoft.com/.default"]
-            result = app_msal.acquire_token_for_client(scopes=scopes)
+    # E-Mail an Patient senden
+    subject = "Terminbestätigung - LandKI"
+    body = f"""
+Hallo {first_name} {last_name},
 
-            if "access_token" in result:
-                access_token = result["access_token"]
-                event_payload = {
-                    "subject": f"Termin: {first_name} {last_name}",
-                    "body": {
-                        "contentType": "Text",
-                        "content": f"Symptome: {symptoms}\nDauer: {duration}\nTelefon: {phone}\nAdresse: {address}"
-                    },
-                    "start": {
-                        "dateTime": appointment_start,
-                        "timeZone": "Europe/Berlin"
-                    },
-                    "end": {
-                        "dateTime": appointment_end,
-                        "timeZone": "Europe/Berlin"
-                    },
-                    "location": {
-                        "displayName": "LandKI Praxis"
-                    },
-                    "attendees": [
-                        {
-                            "emailAddress": {
-                                "address": email,
-                                "name": f"{first_name} {last_name}"
-                            },
-                            "type": "required"
-                        }
-                    ]
-                }
-                graph_url = "https://graph.microsoft.com/v1.0/me/events"
-                headers = {
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
-                }
-                response = requests.post(graph_url, headers=headers, json=event_payload)
+vielen Dank für Ihre Terminanfrage.
 
-                if response.status_code == 201:
-                    logger.info("📆 Outlook-Termin erfolgreich erstellt")
-                else:
-                    logger.warning(f"⚠️ Outlook-Termin konnte nicht erstellt werden: {response.status_code}, {response.text}")
-            else:
-                logger.error(f"❌ Kein Access Token: {result.get('error_description')}")
-        except Exception as outlook_error:
-            logger.error(f"❌ Fehler bei Outlook-Termin: {outlook_error}")
+🗓️ Geburtsdatum: {birthdate}
+📱 Telefon: {phone}
+📩 E-Mail: {email}
+📍 Adresse: {address}
 
-        return jsonify({"status": "success", "message": "Termin gebucht"})
+🩺 Symptome: {symptoms}
+⏱️ Dauer: {symptom_duration}
 
-    except Exception as e:
-        logger.error(f"❌ Fehler in book_appointment(): {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+Wir bestätigen Ihnen den Eingang und melden uns in Kürze mit einem konkreten Terminvorschlag.
 
+Viele Grüße
+Ihr LandKI Team
+    """
+    send_email(subject, body, email)
+
+    return jsonify({"status": "success", "message": "Terminbuchung empfangen"})
+
+# Test-Route
+@app.route("/", methods=["GET"])
+def home():
+    return "LandKI Bot is running."
+
+# Start App
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=8000)
+    app.run(host="0.0.0.0", port=8000)
