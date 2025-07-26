@@ -1,149 +1,159 @@
-# app.py – LandKI Bot mit GPT, Outlook, Logging
-
-import os
-import json
-import logging
-from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, session, redirect
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 import openai
-import requests
+import logging
+import os
+import datetime
 import pytz
-from msal import ConfidentialClientApplication
+import pyodbc
+import msal
+import requests
+import uuid
+from dateutil import parser
 
-# 📌 Flask App Setup
+# Flask App Setup
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default-secret-key")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "1234")
 
-# 🌍 Zeitzone & Logging
-berlin_tz = pytz.timezone("Europe/Berlin")
-logging_level = os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=getattr(logging, logging_level, logging.INFO),
-    format="[%(asctime)s] [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-
-# 🤖 OpenAI Config
-openai.api_key = os.environ.get("AZURE_OPENAI_KEY")
-openai.api_base = os.environ.get("AZURE_OPENAI_ENDPOINT")
+# GPT Setup (Azure OpenAI)
 openai.api_type = "azure"
-openai.api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-05-01-preview")
-DEPLOYMENT_ID = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+openai.api_base = os.environ["OPENAI_API_BASE"]
+openai.api_version = "2024-05-01-preview"
+openai.api_key = os.environ["OPENAI_API_KEY"]
+GPT_DEPLOYMENT = os.environ.get("OPENAI_DEPLOYMENT", "gpt-4o")
 
-# 📅 MSAL / Microsoft Graph
-CLIENT_ID = os.environ.get("AZURE_CLIENT_ID")
-CLIENT_SECRET = os.environ.get("AZURE_CLIENT_SECRET")
-TENANT_ID = os.environ.get("AZURE_TENANT_ID")
-AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPE = ["https://graph.microsoft.com/.default"]
+# SQL Setup
+SQL_SERVER = os.environ["SQL_SERVER"]
+SQL_DATABASE = os.environ["SQL_DATABASE"]
+SQL_USERNAME = os.environ["SQL_USERNAME"]
+SQL_PASSWORD = os.environ["SQL_PASSWORD"]
 
-# 📦 Token holen für Graph API
-def get_token():
-    try:
-        app_msal = ConfidentialClientApplication(
-            client_id=CLIENT_ID,
-            client_credential=CLIENT_SECRET,
-            authority=AUTHORITY
-        )
-        result = app_msal.acquire_token_silent(SCOPE, account=None)
-        if not result:
-            result = app_msal.acquire_token_for_client(scopes=SCOPE)
-        return result.get("access_token")
-    except Exception as e:
-        logging.exception("Fehler beim Abrufen des Access Tokens")
-        return None
+# Verbindung zur SQL-Datenbank (ODBC-Treiber vorausgesetzt)
+SQL_CONNECTION_STRING = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
 
-# 📅 Termin automatisch in Outlook eintragen
-def book_appointment(start_time, end_time, subject, body, location):
-    try:
-        token = get_token()
-        if not token:
-            return {"error": "Kein gültiger Token"}
+# Logging Setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("LandKI-Bot")
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
-        }
+# Zeitzone
+TIMEZONE = pytz.timezone("Europe/Berlin")
 
-        event = {
+# E-Mail Setup (Microsoft 365 via OAuth)
+EMAIL_CLIENT_ID = os.environ["EMAIL_CLIENT_ID"]
+EMAIL_CLIENT_SECRET = os.environ["EMAIL_CLIENT_SECRET"]
+EMAIL_TENANT_ID = os.environ["EMAIL_TENANT_ID"]
+EMAIL_ACCOUNT = os.environ["EMAIL_ACCOUNT"]  # z.B. admin@landki.com
+EMAIL_SCOPE = ["https://graph.microsoft.com/.default"]
+
+
+def get_email_token():
+    app = msal.ConfidentialClientApplication(
+        EMAIL_CLIENT_ID,
+        authority=f"https://login.microsoftonline.com/{EMAIL_TENANT_ID}",
+        client_credential=EMAIL_CLIENT_SECRET
+    )
+    result = app.acquire_token_for_client(scopes=EMAIL_SCOPE)
+    if "access_token" in result:
+        return result["access_token"]
+    else:
+        raise Exception("❌ Tokenabruf für E-Mail fehlgeschlagen: " + str(result))
+
+
+def send_email_to_recipient(to_address, subject, body):
+    token = get_email_token()
+    email_url = "https://graph.microsoft.com/v1.0/users/{}/sendMail".format(EMAIL_ACCOUNT)
+
+    email_msg = {
+        "message": {
             "subject": subject,
             "body": {
-                "contentType": "Text",
+                "contentType": "HTML",
                 "content": body
             },
-            "start": {
-                "dateTime": start_time,
-                "timeZone": "Europe/Berlin"
-            },
-            "end": {
-                "dateTime": end_time,
-                "timeZone": "Europe/Berlin"
-            },
-            "location": {
-                "displayName": location
-            },
-            "attendees": []
+            "toRecipients": [
+                {"emailAddress": {"address": to_address}}
+            ]
         }
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    response = requests.post(email_url, headers=headers, json=email_msg)
 
-        response = requests.post(
-            "https://graph.microsoft.com/v1.0/me/events",
-            headers=headers,
-            data=json.dumps(event)
-        )
+    if response.status_code != 202:
+        raise Exception(f"❌ Fehler beim Senden der E-Mail an {to_address}: {response.status_code}, {response.text}")
+    else:
+        logger.info(f"📧 E-Mail erfolgreich gesendet an {to_address}")
 
-        if response.status_code == 201:
-            logging.info("📅 Termin erfolgreich in Outlook erstellt.")
-            return {"success": True}
-        else:
-            logging.error(f"Fehler: {response.status_code} – {response.text}")
-            return {"error": response.text}
-    except Exception as e:
-        logging.exception("Fehler in book_appointment():")
-        return {"error": str(e)}
 
-# 🧪 Test-Endpunkt zum Erstellen eines Beispieltermins
-@app.route("/test-calendar", methods=["GET"])
-def test_calendar():
-    start = datetime.now(berlin_tz) + timedelta(minutes=5)
-    end = start + timedelta(minutes=30)
-    result = book_appointment(
-        start_time=start.strftime("%Y-%m-%dT%H:%M:%S"),
-        end_time=end.strftime("%Y-%m-%dT%H:%M:%S"),
-        subject="Testtermin über LandKI Bot",
-        body="Dies ist ein automatisch eingetragener Testtermin.",
-        location="Online"
-    )
-    return jsonify(result)
-
-# 🤖 GPT-Chat-Endpunkt
-@app.route("/chat", methods=["POST"])
-def chat():
+# Route: book appointment
+@app.route("/book-appointment", methods=["POST"])
+def book_appointment():
     try:
-        data = request.get_json()
-        user_message = data.get("message", "")
-        logging.info(f"📩 Nachricht empfangen: {user_message}")
+        data = request.json
 
-        messages = [
-            {"role": "system", "content": "Du bist ein smarter Terminassistent."},
-            {"role": "user", "content": user_message}
-        ]
+        # Extract patient data
+        first_name = data.get("first_name")
+        last_name = data.get("last_name")
+        birthday = data.get("birthday")
+        phone = data.get("phone")
+        email = data.get("email")
+        symptoms = data.get("symptoms")
+        duration = data.get("duration")
+        address = data.get("address")
+        appointment_start = data.get("appointment_start")
+        appointment_end = data.get("appointment_end")
 
-        completion = openai.ChatCompletion.create(
-            engine=DEPLOYMENT_ID,
-            messages=messages,
-            temperature=0.4,
-        )
+        logger.info(f"📅 Buche Termin für {first_name} {last_name} am {appointment_start}")
 
-        reply = completion.choices[0].message["content"].strip()
-        logging.info(f"💬 Antwort gesendet: {reply}")
-        return jsonify({"reply": reply})
+        # SQL Insert
+        with pyodbc.connect(SQL_CONNECTION_STRING) as conn:
+            cursor = conn.cursor()
+            insert_query = """
+                INSERT INTO appointments (first_name, last_name, birthday, phone, email, symptoms, duration, address, appointment_start, appointment_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            cursor.execute(insert_query, (
+                first_name, last_name, birthday, phone, email,
+                symptoms, duration, address, appointment_start, appointment_end
+            ))
+            conn.commit()
+            logger.info("✅ Patientendaten erfolgreich in SQL gespeichert")
+
+        # Email-Benachrichtigungen senden
+        subject = f"Neue Terminbuchung: {first_name} {last_name}"
+        email_body = f"""
+        <p>Ein neuer Termin wurde gebucht:</p>
+        <ul>
+            <li><strong>Name:</strong> {first_name} {last_name}</li>
+            <li><strong>Geburtsdatum:</strong> {birthday}</li>
+            <li><strong>Telefon:</strong> {phone}</li>
+            <li><strong>E-Mail:</strong> {email}</li>
+            <li><strong>Symptome:</strong> {symptoms}</li>
+            <li><strong>Dauer:</strong> {duration}</li>
+            <li><strong>Adresse:</strong> {address}</li>
+            <li><strong>Start:</strong> {appointment_start}</li>
+            <li><strong>Ende:</strong> {appointment_end}</li>
+        </ul>
+        <p>Diese Nachricht wurde automatisch von LandKI erstellt.</p>
+        """
+
+        send_email_to_recipient(EMAIL_ACCOUNT, subject, email_body)  # an Praxis
+        send_email_to_recipient(email, subject, email_body)          # an Patient
+
+        return jsonify({"status": "success", "message": "Termin gebucht, gespeichert und E-Mails gesendet."})
 
     except Exception as e:
-        logging.exception("Fehler im Chat-Endpunkt")
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"❌ Fehler bei Terminbuchung: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
-# ▶️ Startpunkt (optional, wird in Azure durch gunicorn überschrieben)
+
+# Health check
+@app.route("/", methods=["GET"])
+def health_check():
+    return "LandKI Bot läuft."
+
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    app.run(debug=True)
