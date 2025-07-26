@@ -60,6 +60,42 @@ def get_appointment_status(first_name, last_name, birthday):
         logging.exception("SQL-Abfragefehler:")
         return "Es gab ein Problem beim Abrufen des Termins. Bitte versuchen Sie es später erneut."
 
+# === SQL-Funktion: Terminstatus stornieren ===
+def cancel_appointment(first_name, last_name, birthday):
+    try:
+        conn = pyodbc.connect(
+            f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=landki-sql-server.database.windows.net;DATABASE=landki-db;UID=landki.sql.server;PWD={os.environ.get("SQL_PASSWORD")}',
+            timeout=5
+        )
+        cursor = conn.cursor()
+        
+        # Prüfen ob Termin vorhanden ist
+        check_query = """
+            SELECT appointment_start FROM dbo.appointments
+            WHERE first_name = ? AND last_name = ? AND birthday = ?
+        """
+        cursor.execute(check_query, (first_name, last_name, birthday))
+        row = cursor.fetchone()
+        
+        if not row:
+            return "Es liegt kein Termin unter diesem Namen vor."
+
+        # Termin löschen
+        delete_query = """
+            DELETE FROM dbo.appointments
+            WHERE first_name = ? AND last_name = ? AND birthday = ?
+        """
+        cursor.execute(delete_query, (first_name, last_name, birthday))
+        conn.commit()
+
+        date_str = row[0].strftime("%d.%m.%Y %H:%M")
+        return f"Ihr Termin am {date_str} wurde erfolgreich storniert."
+
+    except Exception as e:
+        logging.exception("SQL-Stornierungsfehler:")
+        return "Es gab ein Problem beim Stornieren des Termins. Bitte versuchen Sie es später erneut."
+
+
 # === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -81,16 +117,26 @@ def chat():
                 {
                     "role": "system",
                     "content": (
-                        "Du bist ein Terminassistent für die Firma LandKI. "
+                        "Du bist ein Terminassistent für die Firma LandKI.\n"
                         "Wenn der Nutzer seinen Vor- und Nachnamen sowie das Geburtsdatum nennt (z. B. 'Ali Muster 1990-01-01'), "
                         "extrahiere alle drei Angaben – auch dann korrekt, wenn sie in einem Satz oder nebeneinander genannt werden.\n\n"
-                        "Beispiel:\nEingabe: Ali Muster 1990-01-01\n"
+    
+                        "Beispiel:\n"
+                        "Eingabe: Ali Muster 1990-01-01\n"
                         "→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01\n\n"
-                        "Reagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt.\n"
-                        "Du darfst bei der Statusprüfung folgende Python-Funktion verwenden: "
-                        "get_appointment_status(Vorname, Nachname, Geburtstag im Format YYYY-MM-DD). "
-                        "Antworte dann dem Patienten mit dem gefundenen Termin oder gib an, dass kein Termin gefunden wurde."
+
+                        "Reagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt.\n\n"
+
+                        "🟦 Wenn der Nutzer den **Status prüfen** will, darfst du folgende Python-Funktion verwenden:\n"
+                        "→ `get_appointment_status(Vorname, Nachname, Geburtstag)`\n\n"
+
+                        "🟥 Wenn der Nutzer einen **Termin stornieren** möchte, verwende:\n"
+                        "→ `cancel_appointment(Vorname, Nachname, Geburtstag)`\n\n"
+
+                        "Antworten immer freundlich und im Stil eines professionellen Assistenten. "
+                        "Gib den Ergebnistext der Funktion direkt als Antwort aus."
                     )
+
                 },
                 {"role": "user", "content": message}
             ]
