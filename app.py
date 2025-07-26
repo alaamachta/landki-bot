@@ -18,75 +18,20 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "1234")
 
 # GPT Setup (Azure OpenAI)
 openai.api_type = "azure"
-openai.api_base = os.environ["OPENAI_API_BASE"]
-openai.api_version = "2024-05-01-preview"
-openai.api_key = os.environ["OPENAI_API_KEY"]
-GPT_DEPLOYMENT = os.environ.get("OPENAI_DEPLOYMENT", "gpt-4o")
+openai.api_base = os.environ["AZURE_OPENAI_ENDPOINT"]  # angepasst
+openai.api_version = os.environ.get("OPENAI_API_VERSION", "2024-05-01-preview")
+openai.api_key = os.environ["AZURE_OPENAI_KEY"]  # angepasst
+GPT_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
 # SQL Setup
-SQL_SERVER = os.environ["SQL_SERVER"]
-SQL_DATABASE = os.environ["SQL_DATABASE"]
-SQL_USERNAME = os.environ["SQL_USERNAME"]
-SQL_PASSWORD = os.environ["SQL_PASSWORD"]
-
-# Verbindung zur SQL-Datenbank (ODBC-Treiber vorausgesetzt)
-SQL_CONNECTION_STRING = f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+SQL_CONNECTION_STRING = os.environ["AZURE_SQL_CONNECTION_STRING"]  # vereinfacht, da gesamte Verbindungszeichenfolge vorhanden ist
 
 # Logging Setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LandKI-Bot")
 
-# Zeitzone
+# Timezone
 TIMEZONE = pytz.timezone("Europe/Berlin")
-
-# E-Mail Setup (Microsoft 365 via OAuth)
-EMAIL_CLIENT_ID = os.environ["EMAIL_CLIENT_ID"]
-EMAIL_CLIENT_SECRET = os.environ["EMAIL_CLIENT_SECRET"]
-EMAIL_TENANT_ID = os.environ["EMAIL_TENANT_ID"]
-EMAIL_ACCOUNT = os.environ["EMAIL_ACCOUNT"]  # z.B. admin@landki.com
-EMAIL_SCOPE = ["https://graph.microsoft.com/.default"]
-
-
-def get_email_token():
-    app = msal.ConfidentialClientApplication(
-        EMAIL_CLIENT_ID,
-        authority=f"https://login.microsoftonline.com/{EMAIL_TENANT_ID}",
-        client_credential=EMAIL_CLIENT_SECRET
-    )
-    result = app.acquire_token_for_client(scopes=EMAIL_SCOPE)
-    if "access_token" in result:
-        return result["access_token"]
-    else:
-        raise Exception("❌ Tokenabruf für E-Mail fehlgeschlagen: " + str(result))
-
-
-def send_email_to_recipient(to_address, subject, body):
-    token = get_email_token()
-    email_url = "https://graph.microsoft.com/v1.0/users/{}/sendMail".format(EMAIL_ACCOUNT)
-
-    email_msg = {
-        "message": {
-            "subject": subject,
-            "body": {
-                "contentType": "HTML",
-                "content": body
-            },
-            "toRecipients": [
-                {"emailAddress": {"address": to_address}}
-            ]
-        }
-    }
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    response = requests.post(email_url, headers=headers, json=email_msg)
-
-    if response.status_code != 202:
-        raise Exception(f"❌ Fehler beim Senden der E-Mail an {to_address}: {response.status_code}, {response.text}")
-    else:
-        logger.info(f"📧 E-Mail erfolgreich gesendet an {to_address}")
-
 
 # Route: book appointment
 @app.route("/book-appointment", methods=["POST"])
@@ -122,33 +67,11 @@ def book_appointment():
             conn.commit()
             logger.info("✅ Patientendaten erfolgreich in SQL gespeichert")
 
-        # Email-Benachrichtigungen senden
-        subject = f"Neue Terminbuchung: {first_name} {last_name}"
-        email_body = f"""
-        <p>Ein neuer Termin wurde gebucht:</p>
-        <ul>
-            <li><strong>Name:</strong> {first_name} {last_name}</li>
-            <li><strong>Geburtsdatum:</strong> {birthday}</li>
-            <li><strong>Telefon:</strong> {phone}</li>
-            <li><strong>E-Mail:</strong> {email}</li>
-            <li><strong>Symptome:</strong> {symptoms}</li>
-            <li><strong>Dauer:</strong> {duration}</li>
-            <li><strong>Adresse:</strong> {address}</li>
-            <li><strong>Start:</strong> {appointment_start}</li>
-            <li><strong>Ende:</strong> {appointment_end}</li>
-        </ul>
-        <p>Diese Nachricht wurde automatisch von LandKI erstellt.</p>
-        """
-
-        send_email_to_recipient(EMAIL_ACCOUNT, subject, email_body)  # an Praxis
-        send_email_to_recipient(email, subject, email_body)          # an Patient
-
-        return jsonify({"status": "success", "message": "Termin gebucht, gespeichert und E-Mails gesendet."})
+        return jsonify({"status": "success", "message": "Termin gebucht und gespeichert."})
 
     except Exception as e:
         logger.error(f"❌ Fehler bei Terminbuchung: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 # Health check
 @app.route("/", methods=["GET"])
