@@ -7,7 +7,7 @@ import logging
 from flask_cors import CORS
 from datetime import datetime
 import pytz
-from openai.error import OpenAIError
+from openai import OpenAIError
 
 # === Flask App Setup ===
 app = Flask(__name__)
@@ -33,8 +33,11 @@ MODEL_NAME = os.environ.get("AZURE_OPENAI_MODEL", "gpt-4o")
 # === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
+ 
     try:
+ 
         logging.info("POST /chat aufgerufen")
+
 
         # Anfrage prüfen
         data = request.get_json()
@@ -43,6 +46,7 @@ def chat():
             return jsonify({"error": "Fehlender Parameter: 'message'"}), 400
 
         message = data["message"]
+
         logging.debug(f"Eingabe: {message}")
 
         # GPT-Request
@@ -68,6 +72,7 @@ def chat():
         logging.exception("Unerwarteter Fehler:")
         return jsonify({"error": "Fehler beim Verarbeiten der Anfrage."}), 500
 
+
 # === Healthcheck ===
 @app.route("/", methods=["GET"])
 def index():
@@ -76,3 +81,4 @@ def index():
 # === Lokaler Startpunkt (für Debugging) ===
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
