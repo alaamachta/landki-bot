@@ -5,6 +5,7 @@ import logging
 from flask_cors import CORS
 from datetime import datetime
 import pytz
+import pyodbc
 from openai import AzureOpenAI, OpenAIError
 
 # === Flask App Setup ===
@@ -31,6 +32,37 @@ MODEL_NAME = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
 
 # === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
+def get_appointment_status(first_name, last_name, birthday):
+    try:
+        # Verbindung zur Azure SQL-Datenbank
+        conn = pyodbc.connect(
+            f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER=landki-sql-server.database.windows.net;DATABASE=landki-db;UID=landki.sql.server;PWD={os.environ.get("SQL_PASSWORD")}',
+            timeout=5
+        )
+        cursor = conn.cursor()
+
+        query = """
+            SELECT appointment_start, address
+            FROM dbo.appointments
+            WHERE first_name = ? AND last_name = ? AND birthday = ?
+        """
+        cursor.execute(query, (first_name, last_name, birthday))
+        row = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if row:
+            date_time, address = row
+            date_str = date_time.strftime("%d.%m.%Y")
+            time_str = date_time.strftime("%H:%M")
+            return f"Ihr Termin ist am {date_str} um {time_str} Uhr in {address}."
+        else:
+            return "Es liegt aktuell kein Termin unter diesem Namen vor."
+
+    except Exception as e:
+        logging.exception("SQL-Abfragefehler:")
+        return "Es gab ein Problem beim Abrufen des Termins. Bitte versuchen Sie es später erneut."
+        
 def chat():
     try:
         logging.info("POST /chat aufgerufen")
@@ -57,6 +89,7 @@ def chat():
                         "\n\nBeispiel:\nEingabe: Ali Muster 1990-01-01"
                         "\n→ Vorname = Ali, Nachname = Muster, Geburtstag = 1990-01-01"
                         "\n\nReagiere nur dann mit Nachfragen, wenn eine dieser Informationen wirklich fehlt."
+                        "Du darfst bei der Statusprüfung folgende Python-Funktion verwenden: get_appointment_status(Vorname, Nachname, Geburtstag im Format YYYY-MM-DD). Antworte dann dem Patienten mit dem gefundenen Termin oder gib an, dass kein Termin gefunden wurde."
                     )
                 },
                 {"role": "user", "content": message}
