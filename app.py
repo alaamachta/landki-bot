@@ -17,7 +17,11 @@ from colorlog import ColoredFormatter
 formatter = ColoredFormatter(
     "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
     log_colors={
-        'DEBUG': 'cyan', 'INFO': 'green', 'WARNING': 'yellow', 'ERROR': 'red', 'CRITICAL': 'bold_red'
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'bold_red',
     }
 )
 handler = logging.StreamHandler()
@@ -26,12 +30,12 @@ logger = logging.getLogger()
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 
-# === Flask App ===
+# === Flask Setup ===
 app = Flask(__name__)
 CORS(app, supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY")
 
-# === ENV Variablen ===
+# === Hilfsfunktion für sichere ENV-Nutzung ===
 def env(name, required=True):
     value = os.getenv(name)
     if not value and required:
@@ -39,6 +43,7 @@ def env(name, required=True):
         raise EnvironmentError(f"Fehlende ENV: {name}")
     return value
 
+# === ENV-Variablen ===
 AZURE_OPENAI_API_KEY     = env("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT    = env("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT  = env("AZURE_OPENAI_DEPLOYMENT")
@@ -66,51 +71,61 @@ client = AzureOpenAI(
     azure_endpoint=AZURE_OPENAI_ENDPOINT
 )
 
-# === MSAL ===
+# === MSAL Client ===
 def msal_app():
     return msal.ConfidentialClientApplication(
-        MS_CLIENT_ID, authority=MS_AUTHORITY, client_credential=MS_CLIENT_SECRET
+        MS_CLIENT_ID,
+        authority=MS_AUTHORITY,
+        client_credential=MS_CLIENT_SECRET
     )
 
 def token_by_code(code):
     return msal_app().acquire_token_by_authorization_code(
-        code, scopes=MS_SCOPES, redirect_uri=MS_REDIRECT_URI
+        code,
+        scopes=MS_SCOPES,
+        redirect_uri=MS_REDIRECT_URI
     )
 
-# === SQL Connection ===
+# === SQL Verbindung ===
 def get_sql_conn():
     conn_str = f"DRIVER={{ODBC Driver 17 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};UID={SQL_USERNAME};PWD={SQL_PASSWORD}"
     return pyodbc.connect(conn_str)
 
-# === Routen ===
+# === Startseite ===
 @app.route("/")
 def root():
     return "✅ LandKI Terminassistent läuft"
 
+# === Login zu Outlook Kalender ===
 @app.route("/calendar")
 def calendar():
     session["state"] = os.urandom(24).hex()
     url = msal_app().get_authorization_request_url(
-        scopes=MS_SCOPES, state=session["state"], redirect_uri=MS_REDIRECT_URI
+        scopes=MS_SCOPES,
+        state=session["state"],
+        redirect_uri=MS_REDIRECT_URI
     )
     return redirect(url)
 
+# === Callback von Microsoft ===
 @app.route("/callback")
 def callback():
     if request.args.get("state") != session.get("state"):
-        return "Ungültiger State", 400
+        return "❌ Ungültiger State", 400
     token = token_by_code(request.args.get("code"))
     if "access_token" not in token:
         return jsonify(token), 500
     session["access_token"] = token["access_token"]
     return "✅ Kalenderzugriff gespeichert"
 
+# === Terminbuchung (Testfunktion) ===
 @app.route("/book-test", methods=["POST"])
 def book():
     try:
         msg = request.json.get("message", "")
-        logger.info(f"📥 Nachricht: {msg}")
+        logger.info(f"📥 Eingehender Text: {msg}")
 
+        # === GPT Extraktion ===
         gpt = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=[
@@ -119,14 +134,19 @@ def book():
             ]
         )
         data = json.loads(gpt.choices[0].message.content)
+        logger.info("✅ Daten extrahiert")
 
-        # === Kalendereintrag ===
+        # === Outlook Kalendereintrag ===
         start = datetime.fromisoformat(data["appointment_start"])
-        end = start + timedelta(minutes=45)
+        end = start + timedelta(minutes=45)  # Dauer: 45 Min
         token = session.get("access_token")
         if not token:
             return redirect("/calendar")
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
         body = {
             "subject": f"Termin: {data['first_name']} {data['last_name']} ({data['service_type']})",
             "start": {"dateTime": start.isoformat(), "timeZone": "Europe/Berlin"},
@@ -134,16 +154,24 @@ def book():
             "location": {"displayName": "Online"},
             "body": {"contentType": "Text", "content": data["note_internal"] or "Keine Notiz"}
         }
+
         res = requests.post("https://graph.microsoft.com/v1.0/me/events", headers=headers, json=body)
         if res.status_code != 201:
-            logger.error(res.text)
+            logger.error(f"❌ Outlook Fehler: {res.text}")
             return jsonify({"error": "Kalenderfehler"}), 500
+
+        logger.info("📅 Termin in Outlook erstellt")
 
         # === SQL Insert ===
         conn = get_sql_conn()
         cursor = conn.cursor()
         sql = """
-        INSERT INTO dbo.appointments (first_name, last_name, birthdate, phone, email, symptom, symptom_duration, address, appointment_start, appointment_end, created_at, service_type, note_internal)
+        INSERT INTO dbo.appointments (
+            first_name, last_name, birthdate, phone, email,
+            symptom, symptom_duration, address,
+            appointment_start, appointment_end, created_at,
+            service_type, note_internal
+        )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         values = (
@@ -155,14 +183,11 @@ def book():
         cursor.execute(sql, values)
         conn.commit()
         conn.close()
+        logger.info("✅ SQL-Eintrag erfolgreich")
 
         return jsonify({"status": "success", "info": "Termin gespeichert."})
 
     except Exception:
-        logger.error("❌ Fehler bei Buchung:")
+        logger.error("❌ Fehler bei Terminbuchung:")
         logger.error(traceback.format_exc())
         return jsonify({"error": "Interner Fehler"}), 500
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000)  # ✅ Azure erwartet Port 8000
-
