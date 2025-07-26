@@ -9,7 +9,7 @@ from openai import AzureOpenAI, OpenAIError
 
 # === Flask App Setup ===
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/chat": {"origins": "*"}}, methods=["POST"], allow_headers=["Content-Type"])
 
 # === Logging Setup ===
 LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG")
