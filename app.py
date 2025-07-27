@@ -1,195 +1,167 @@
-# app.py – GPT-gestützter LandKI-Terminassistent mit Outlook + SQL + DSGVO-konformer E-Mail
-
-from flask import Flask, request, jsonify, session
-from openai import AzureOpenAI  # NEU: GPT-Client ab SDK 1.0+
-import os
-import logging
+# Version v1.5 – Integriert: GPT-4o + Outlook + SQL + Mail + Systemprompt
+from flask import Flask, request, jsonify, session, redirect
 from flask_cors import CORS
-from datetime import datetime, timedelta
-import pytz
-import pyodbc
-import smtplib
+import os, openai, logging, smtplib, pyodbc
+from openai import OpenAIError
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timedelta
+import pytz
+from msal import ConfidentialClientApplication
 import requests
 
-# === Flask Setup ===
+# === Konfiguration ===
 app = Flask(__name__)
 CORS(app)
+app.secret_key = os.environ.get("FLASK_SECRET", "devkey")
 
-# === Logging ===
+# === Logging mit Zeitzone ===
 LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG")
 logging.basicConfig(
     level=LOG_LEVEL,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler()]
 )
+logging.Formatter.converter = lambda *args: datetime.now(pytz.timezone('Europe/Berlin')).timetuple()
 
-# === Konfiguration ===
-TZ = pytz.timezone("Europe/Berlin")
-SQL_SERVER = 'landki-sql-server.database.windows.net'
-SQL_DB = 'landki-db'
-SQL_USER = 'landki.sql.server'
-SQL_PASSWORD = os.environ.get('SQL_PASSWORD')
-SMTP_SENDER = "AlaaMashta@LandKI.onmicrosoft.com"
-SMTP_RECIPIENT = "info@landki.com"
+# === GPT-4o + Azure Search Setup ===
+AZURE_OPENAI_ENDPOINT = os.environ["AZURE_OPENAI_ENDPOINT"]
+AZURE_OPENAI_KEY = os.environ["AZURE_OPENAI_KEY"]
+AZURE_DEPLOYMENT_ID = os.environ["AZURE_DEPLOYMENT_ID"]
+AZURE_SEARCH_ENDPOINT = os.environ["AZURE_SEARCH_ENDPOINT"]
+AZURE_SEARCH_KEY = os.environ["AZURE_SEARCH_KEY"]
+AZURE_SEARCH_INDEX = os.environ["AZURE_SEARCH_INDEX"]
 
-# === GPT-Chat Endpoint ===
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        user_input = request.get_json()["message"]
+# === Outlook API Setup ===
+CLIENT_ID = os.environ["MS_CLIENT_ID"]
+CLIENT_SECRET = os.environ["MS_CLIENT_SECRET"]
+TENANT_ID = os.environ["MS_TENANT_ID"]
+REDIRECT_URI = os.environ["MS_REDIRECT_URI"]
+SMTP_SENDER = os.environ["SMTP_SENDER"]
+SMTP_PASSWORD = os.environ["SMTP_PASSWORD"]
+SMTP_RECIPIENT = os.environ["SMTP_RECIPIENT"]
+SQL_CONN_STR = os.environ["SQL_CONN_STR"]
 
-        system_prompt = """
-Du bist ein professioneller, freundlicher Terminassistent im Namen von LandKI.
-Du hilfst Nutzern dabei, Termine zu buchen, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
-Sprich klar, hilfsbereit und direkt. Gib keine medizinischen Empfehlungen. Du bist kein Arzt – du bist ein digitaler Assistent.
+# === GPT-System-Prompt ===
+GPT_SYSTEM_PROMPT = (
+    "Du bist ein Terminassistent für eine Arztpraxis. "
+    "Wenn der Patient einen Termin buchen will, frage schrittweise nach: Vorname, Nachname, Geburtstag (JJJJ-MM-TT), "
+    "Telefonnummer, Symptome, Symptomdauer, Adresse. Fasse danach alles zusammen und frage nach Terminzeit. "
+    "Erst nach Bestätigung soll die Buchung ausgelöst werden. Sprich immer höflich, klar und in Du-Form."
+)
 
-Sammle folgende Daten Schritt für Schritt im Gespräch (du darfst mehrere Felder in einer Frage kombinieren, wenn sinnvoll):
-1. Vorname (`first_name`)
-2. Nachname (`last_name`)
-3. Geburtstag im Format JJJJ-MM-TT (`birthday`) → zur eindeutigen Identifikation
-4. Telefonnummer (optional, `phone`)
-5. Adresse (optional, `address`)
-6. Gewünschte Uhrzeit oder Zeitraum für Termin → verwende 15-Minuten-Takt zwischen 09:00 und 17:00 Uhr (`selected_time`)
-7. E-Mail-Adresse des Patienten (`email`)
-8. Optionale Nachricht (`user_message`), z. B.:
-   – „Ich komme mit meinem Sohn“
-   – „Ich hätte gerne ein Beratungsgespräch“
-   – „Bitte bestätigen Sie den Termin per E-Mail“
+# === MSAL App ===
+msal_app = ConfidentialClientApplication(
+    CLIENT_ID,
+    authority=f"https://login.microsoftonline.com/{TENANT_ID}",
+    client_credential=CLIENT_SECRET
+)
 
-Sage dazu:
-„Möchten Sie uns noch etwas mitteilen?“ oder
-„Gibt es einen Grund für den Termin, den wir berücksichtigen sollten?“
+# === Outlook Access Token ===
+def get_access_token():
+    token = msal_app.acquire_token_for_client(scopes=["https://graph.microsoft.com/.default"])
+    return token["access_token"]
 
-Wenn der Nutzer keine Nachricht mitteilen möchte, lasse `user_message` leer.
+# === Freie Slots (werktags 9–17 Uhr) ===
+def get_free_slots():
+    access_token = get_access_token()
+    today = datetime.utcnow()
+    start = today.isoformat() + "Z"
+    end = (today + timedelta(days=2)).isoformat() + "Z"
 
-Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchung und gib eine Vorschau:
-„Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Alaa Mashta. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
+    url = f"https://graph.microsoft.com/v1.0/users/{SMTP_SENDER}/calendar/getSchedule"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    body = {
+        "schedules": [SMTP_SENDER],
+        "startTime": {"dateTime": start, "timeZone": "UTC"},
+        "endTime": {"dateTime": end, "timeZone": "UTC"},
+        "availabilityViewInterval": 15
+    }
 
-Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in einer Azure-Datenbank gespeichert und eine automatische E-Mail wird an beide Seiten gesendet.
+    res = requests.post(url, headers=headers, json=body).json()
+    slots = []
+    if "value" in res:
+        for schedule in res["value"]:
+            for i in range(18, 54):  # 9–17 Uhr = Slots 18–53
+                if schedule["availabilityView"][i] == "0":
+                    hour = i // 4
+                    minute = (i % 4) * 15
+                    slot_time = today.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                    slots.append(slot_time.strftime("%Y-%m-%d %H:%M"))
+    return slots
 
-Sprich immer in höflichem, einfachem Deutsch.
-Falls etwas unklar ist, frage nach.
-Wenn ein Feld wie Geburtstag im falschen Format kommt, gib ein Beispiel (JJJJ-MM-TT).
-Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
-        """
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
-        ]
-
-        client = AzureOpenAI(
-            api_key=os.environ["AZURE_OPENAI_KEY"],
-            api_version="2024-10-21",
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
-        )
-
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=0.3
-        )
-
-        answer = response.choices[0].message.content
-        return jsonify({"response": answer})
-
-    except Exception as e:
-        logging.exception("Fehler im /chat-Endpunkt")
-        return jsonify({"error": str(e)}), 500
-
-# === Terminbuchung ===
+# === Termin buchen (Outlook, SQL, Mail) ===
 @app.route("/book", methods=["POST"])
-def book():
-    data = request.get_json()
-    access_token = session.get("access_token")
-    if not access_token:
-        return jsonify({"error": "Nicht authentifiziert."}), 401
-
+def book_appointment():
     try:
-        start_time_utc = datetime.fromisoformat(data['selected_time'])
-        start_local = start_time_utc.astimezone(TZ)
-        end_local = start_local + timedelta(minutes=30)
+        data = request.get_json()
+        logging.info(f"Neue Buchung: {data}")
 
-        logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
-
-        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']} ({data['birthday']})<br>Adresse: {data.get('address')}"
-        if data.get('user_message'):
-            outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
-
-        event = {
-            "subject": f"Termin: {data['first_name']} {data['last_name']}",
-            "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
-            "body": {"contentType": "HTML", "content": outlook_body},
-            "location": {"displayName": "Praxis LandKI"},
-            "attendees": []
-        }
-
-        graph_resp = requests.post(
-            'https://graph.microsoft.com/v1.0/me/events',
-            headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'},
-            json=event
+        # SQL speichern
+        conn = pyodbc.connect(SQL_CONN_STR)
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO appointments (first_name, last_name, birthday, phone, symptoms, duration, address, date, email) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            data["first_name"], data["last_name"], data["birthday"],
+            data["phone"], data["symptoms"], data["duration"],
+            data["address"], data["date"], data["email"]
         )
-        if graph_resp.status_code != 201:
-            logging.error(f"Outlook Fehler: {graph_resp.text}")
-            return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
-        logging.info("Outlook-Termin eingetragen")
-
-        conn = pyodbc.connect(
-            f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};'
-            f'UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO dbo.appointments (
-                first_name, last_name, birthdate, phone, email, address,
-                appointment_start, appointment_end, created_at,
-                company_code, bot_origin, service_type, note_internal, user_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?, ?, ?)
-        """, (
-            data['first_name'],
-            data['last_name'],
-            data['birthday'],
-            data.get('phone'),
-            data['email'],
-            data.get('address'),
-            start_local,
-            end_local,
-            "LANDKI", "GPT-ASSIST", "Standard", "Termin gebucht via Bot",
-            data.get('user_message')
-        ))
         conn.commit()
-        cur.close()
-        conn.close()
-        logging.info("SQL-Termin gespeichert")
+        logging.info("SQL-Eintrag gespeichert")
 
-        subject = "Ihre Terminbestätigung bei LandKI"
-        html = f"""
-        <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
-        <p>Ihr Termin ist gebucht:</p>
-        <ul>
-            <li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li>
-            <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li>
-        </ul>
-        {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
-        <p>Dies ist eine automatische Terminbestätigung von LandKI.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
-        <p>Mit freundlichen Grüßen<br>Ihr LandKI-Team</p>
-        """
-        for rcp in [data['email'], SMTP_RECIPIENT]:
+        # E-Mail senden
+        subject = "Terminbestätigung"
+        html = f"<p>Hallo {data['first_name']},</p><p>Ihr Termin am {data['date']} wurde gebucht.</p>"
+
+        for rcp in [data["email"], SMTP_RECIPIENT]:
             msg = MIMEMultipart()
-            msg['From'] = SMTP_SENDER
-            msg['To'] = rcp
-            msg['Subject'] = subject
-            msg.attach(MIMEText(html, 'html'))
-            with smtplib.SMTP('smtp.office365.com', 587) as s:
-                s.starttls()
-                s.login(SMTP_SENDER, os.environ.get("SMTP_PASSWORD"))
-                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
-        logging.info("Bestätigungs-Mails versendet")
+            msg["From"] = SMTP_SENDER
+            msg["To"] = rcp
+            msg["Subject"] = subject
+            msg.attach(MIMEText(html, "html"))
 
+            with smtplib.SMTP("smtp.office365.com", 587) as s:
+                s.starttls()
+                s.login(SMTP_SENDER, SMTP_PASSWORD)
+                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
+
+        logging.info("Bestätigungs-Mails versendet")
         return jsonify({"status": "success", "message": "Termin gebucht."})
 
     except Exception as e:
         logging.exception("Fehler bei Terminbuchung")
         return jsonify({"error": str(e)}), 500
+
+# === Chat mit GPT + Search ===
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        user_message = request.get_json().get("message", "")
+        response = openai.ChatCompletion.create(
+            api_key=AZURE_OPENAI_KEY,
+            api_base=AZURE_OPENAI_ENDPOINT,
+            api_type="azure",
+            api_version="2024-10-21",
+            deployment_id=AZURE_DEPLOYMENT_ID,
+            messages=[
+                {"role": "system", "content": GPT_SYSTEM_PROMPT},
+                {"role": "user", "content": user_message}
+            ],
+            extra_headers={
+                "azure-search-endpoint": AZURE_SEARCH_ENDPOINT,
+                "azure-search-key": AZURE_SEARCH_KEY,
+                "azure-search-index": AZURE_SEARCH_INDEX
+            },
+            temperature=0.2  # Klar & zuverlässig
+        )
+        answer = response.choices[0].message["content"]
+        return jsonify({"answer": answer})
+
+    except OpenAIError as e:
+        logging.exception("GPT-Fehler")
+        return jsonify({"error": str(e)}), 500
+
+# === Start ===
+if __name__ == "__main__":
+    app.run(debug=True)
