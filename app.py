@@ -1,8 +1,7 @@
-# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand
-# Version: v1.0002 (allgemein – Firma & Kunde statt Praxis & Patient)
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0004
 
 from flask import Flask, request, jsonify, session
-from openai import AzureOpenAI
+from openai import AzureOpenAI  # Azure SDK ab v1.0+
 import os
 import logging
 from flask_cors import CORS
@@ -14,11 +13,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import requests
 
-# === Flask Setup ===
+# === Flask App Setup ===
 app = Flask(__name__)
 CORS(app)
 
-# === Logging ===
+# === Logging Setup ===
 LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG")
 logging.basicConfig(
     level=LOG_LEVEL,
@@ -28,51 +27,41 @@ logging.basicConfig(
 
 # === Konfiguration ===
 TZ = pytz.timezone("Europe/Berlin")
-SQL_SERVER = 'landki-sql-server.database.windows.net'
-SQL_DB = 'landki-db'
-SQL_USER = 'landki.sql.server'
-SQL_PASSWORD = os.environ.get('SQL_PASSWORD')
-SMTP_SENDER = "AlaaMashta@LandKI.onmicrosoft.com"
+SQL_SERVER = os.environ.get("SQL_SERVER")
+SQL_DB = os.environ.get("SQL_DATABASE")
+SQL_USER = os.environ.get("SQL_USERNAME")
+SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+SMTP_SENDER = os.environ.get("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
 
+# === GPT-Chat-Endpunkt ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.get_json()["message"]
 
         system_prompt = """
-Du bist ein professioneller, freundlicher Terminassistent im Namen von LandKI.
-Du hilfst Kunden dabei, Termine mit einer Firma zu vereinbaren, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
-Sprich klar, hilfsbereit und direkt. Gib keine fachlichen Empfehlungen. Du bist kein Berater – du bist ein digitaler Assistent.
+Du bist ein professioneller, freundlicher Terminassistent im Namen einer Firma.
+Du hilfst Kunden dabei, Termine zu buchen, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
+Sprich klar, hilfsbereit und direkt. Gib keine medizinischen Empfehlungen. Du bist kein Arzt – du bist ein digitaler Assistent.
 
-Sammle folgende Daten Schritt für Schritt im Gespräch:
+Sammle folgende Daten Schritt für Schritt (du darfst mehrere Felder in einer Frage kombinieren):
 1. Vorname (`first_name`)
 2. Nachname (`last_name`)
-3. Geburtstag im Format JJJJ-MM-TT (`birthday`) → zur eindeutigen Identifikation
+3. Geburtstag im Format JJJJ-MM-TT (`birthday`)
 4. Telefonnummer (optional, `phone`)
 5. Adresse (optional, `address`)
-6. Gewünschte Uhrzeit oder Zeitraum für Termin → verwende 15-Minuten-Takt zwischen 09:00 und 17:00 Uhr (`selected_time`)
-7. E-Mail-Adresse des Kunden (`email`)
-8. Optionale Nachricht (`user_message`), z. B.:
-   – „Ich komme mit meinem Kollegen“
-   – „Ich hätte gerne ein Beratungsgespräch“
-   – „Bitte bestätigen Sie den Termin per E-Mail“
+6. Terminzeit im 15-Minuten-Takt zwischen 09:00–17:00 Uhr (`selected_time`)
+7. E-Mail-Adresse (`email`)
+8. Optionale Nachricht (`user_message`)
 
-Sage dazu:
-„Möchten Sie uns noch etwas mitteilen?“ oder
-„Gibt es einen Grund für den Termin, den wir berücksichtigen sollten?“
+Frage: „Möchten Sie uns noch etwas mitteilen?“ oder „Gibt es einen Grund für den Termin?“
+Wenn keine Nachricht: `user_message` leer lassen.
 
-Wenn der Nutzer keine Nachricht mitteilen möchte, lasse `user_message` leer.
+Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchung und sage:
+„Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Max Mustermann. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
 
-Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchung und gib eine Vorschau:
-„Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Alaa Mashta. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
-
-Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in einer Azure-Datenbank gespeichert und eine automatische E-Mail wird an beide Seiten gesendet.
-
-Sprich immer in höflichem, einfachem Deutsch.
-Wenn etwas unklar ist, frage nach.
-Wenn ein Feld wie Geburtstag im falschen Format kommt, gib ein Beispiel (JJJJ-MM-TT).
-Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
+Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib Format-Beispiel für Geburtsdatum.
         """
 
         messages = [
@@ -89,16 +78,17 @@ Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
         response = client.chat.completions.create(
             model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
             messages=messages,
-            temperature=0.3
+            temperature=0.3  # empfohlen für kurze, präzise Antworten
         )
 
-        answer = response.choices[0].message.content
-        return jsonify({"response": answer})
+        return jsonify({"response": response.choices[0].message.content})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
 
+
+# === Terminbuchung: Outlook + SQL + E-Mail ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
@@ -113,7 +103,8 @@ def book():
 
         logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
 
-        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']} ({data['birthday']})<br>Adresse: {data.get('address')}"
+        # === Outlook-Termin ===
+        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']}<br>Geburtsdatum: {data['birthday']}<br>Adresse: {data.get('address')}"
         if data.get('user_message'):
             outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
 
@@ -122,13 +113,16 @@ def book():
             "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
             "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
             "body": {"contentType": "HTML", "content": outlook_body},
-            "location": {"displayName": "LandKI Meeting"},
+            "location": {"displayName": "LandKI Kalender"},
             "attendees": []
         }
 
         graph_resp = requests.post(
             'https://graph.microsoft.com/v1.0/me/events',
-            headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'},
+            headers={
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            },
             json=event
         )
         if graph_resp.status_code != 201:
@@ -136,9 +130,10 @@ def book():
             return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
         logging.info("Outlook-Termin eingetragen")
 
+        # === SQL speichern ===
         conn = pyodbc.connect(
-            f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};'
-            f'UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
+            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;")
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO dbo.appointments (
@@ -163,7 +158,8 @@ def book():
         conn.close()
         logging.info("SQL-Termin gespeichert")
 
-        subject = "Ihre Terminbestätigung bei LandKI"
+        # === E-Mail-Bestätigung ===
+        subject = "Ihre Terminbestätigung"
         html = f"""
         <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
         <p>Ihr Termin ist gebucht:</p>
@@ -172,9 +168,10 @@ def book():
             <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li>
         </ul>
         {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
-        <p>Dies ist eine automatische Terminbestätigung von LandKI.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
-        <p>Mit freundlichen Grüßen<br>Ihr LandKI-Team</p>
+        <p>Dies ist eine automatische Terminbestätigung.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
+        <p>Mit freundlichen Grüßen<br>Ihr Team</p>
         """
+
         for rcp in [data['email'], SMTP_RECIPIENT]:
             msg = MIMEMultipart()
             msg['From'] = SMTP_SENDER
