@@ -1,7 +1,7 @@
-# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0006 (mit memory_context)
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0007 (DEBUG aktiv für Tests)
 
 from flask import Flask, request, jsonify, session
-from openai import AzureOpenAI  # Azure SDK ab v1.0+
+from openai import AzureOpenAI
 import os
 import logging
 from flask_cors import CORS
@@ -13,7 +13,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import requests
 
-# === Flask App Setup ===
+# === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
 
@@ -33,9 +33,6 @@ SQL_USER = os.environ.get("SQL_USERNAME")
 SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
 SMTP_SENDER = os.environ.get("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
-
-# === Memory-Kontext pro Session (nicht persistent) ===
-conversation_history = []
 
 # === GPT-Chat-Endpunkt ===
 @app.route("/chat", methods=["POST"])
@@ -67,8 +64,10 @@ Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchu
 Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib Format-Beispiel für Geburtsdatum.
         """
 
-        # Bestehenden Verlauf laden (nur Arbeitsspeicher, nicht persistent)
-        messages = [{"role": "system", "content": system_prompt}] + conversation_history + [{"role": "user", "content": user_input}]
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
 
         client = AzureOpenAI(
             api_key=os.environ["AZURE_OPENAI_KEY"],
@@ -82,13 +81,7 @@ Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib
             temperature=0.3
         )
 
-        reply = response.choices[0].message.content
-
-        # Verlauf aktualisieren
-        conversation_history.append({"role": "user", "content": user_input})
-        conversation_history.append({"role": "assistant", "content": reply})
-
-        return jsonify({"response": reply})
+        return jsonify({"response": response.choices[0].message.content})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
