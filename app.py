@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0005
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0006 (mit memory_context)
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI  # Azure SDK ab v1.0+
@@ -34,6 +34,9 @@ SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
 SMTP_SENDER = os.environ.get("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
 
+# === Memory-Kontext pro Session (nicht persistent) ===
+conversation_history = []
+
 # === GPT-Chat-Endpunkt ===
 @app.route("/chat", methods=["POST"])
 def chat():
@@ -64,10 +67,8 @@ Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchu
 Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib Format-Beispiel für Geburtsdatum.
         """
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
-        ]
+        # Bestehenden Verlauf laden (nur Arbeitsspeicher, nicht persistent)
+        messages = [{"role": "system", "content": system_prompt}] + conversation_history + [{"role": "user", "content": user_input}]
 
         client = AzureOpenAI(
             api_key=os.environ["AZURE_OPENAI_KEY"],
@@ -81,7 +82,13 @@ Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib
             temperature=0.3
         )
 
-        return jsonify({"response": response.choices[0].message.content})
+        reply = response.choices[0].message.content
+
+        # Verlauf aktualisieren
+        conversation_history.append({"role": "user", "content": user_input})
+        conversation_history.append({"role": "assistant", "content": reply})
+
+        return jsonify({"response": reply})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
