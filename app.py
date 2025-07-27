@@ -1,99 +1,132 @@
+# app.py – GPT-gestützter LandKI-Terminassistent mit Outlook + SQL + DSGVO-konformer E-Mail
+
+from flask import Flask, request, jsonify, session
+import openai
 import os
 import logging
-import pytz
-from flask import Flask, request, jsonify, session, redirect
 from flask_cors import CORS
-from datetime import datetime
+from datetime import datetime, timedelta
+import pytz
 import pyodbc
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import requests
 
-# Initialisiere Flask
+# === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "default_secret")
 
-# Logging mit Zeitzone
-berlin_tz = pytz.timezone("Europe/Berlin")
+# === Logging ===
+LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG")
 logging.basicConfig(
-    level=os.environ.get("LOG_LEVEL", "INFO"),
-    format="[%(asctime)s] %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logging.Formatter.converter = lambda *args: datetime.now(berlin_tz).timetuple()
-
-# SQL-Verbindungsaufbau
-SQL_SERVER = os.environ.get("SQL_SERVER")
-SQL_DATABASE = os.environ.get("SQL_DATABASE")
-SQL_USERNAME = os.environ.get("SQL_USERNAME")
-SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
-
-# Verbindungs-String direkt zusammenbauen (wenn kein Full-Connection-String gesetzt)
-SQL_DRIVER = "ODBC Driver 18 for SQL Server"
-
-# Falls vorhanden, nutze vollen Verbindungsstring
-SQL_CONN_STRING = os.environ.get("AZURE_SQL_CONNECTION_STRING") or (
-    f"DRIVER={{{SQL_DRIVER}}};SERVER={SQL_SERVER};DATABASE={SQL_DATABASE};"
-    f"UID={SQL_USERNAME};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;"
-    f"Connection Timeout=30;"
+    level=LOG_LEVEL,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
 )
 
-def get_sql_connection():
-    return pyodbc.connect(SQL_CONN_STRING)
-
-@app.route("/")
-def home():
-    return "LandKI Bot is running."
+# === Konfiguration ===
+TZ = pytz.timezone("Europe/Berlin")
+SQL_SERVER = 'landki-sql-server.database.windows.net'
+SQL_DB = 'landki-db'
+SQL_USER = 'landki.sql.server'
+SQL_PASSWORD = os.environ.get('SQL_PASSWORD')
+SMTP_SENDER = "AlaaMashta@LandKI.onmicrosoft.com"
+SMTP_RECIPIENT = "info@landki.com"
 
 @app.route("/book", methods=["POST"])
-def book_appointment():
+def book():
+    data = request.get_json()
+    access_token = session.get("access_token")
+    if not access_token:
+        return jsonify({"error": "Nicht authentifiziert."}), 401
+
     try:
-        data = request.get_json()
+        # === Zeiten umwandeln ===
+        start_time_utc = datetime.fromisoformat(data['selected_time'])
+        start_local = start_time_utc.astimezone(TZ)
+        end_local = start_local + timedelta(minutes=30)
 
-        # birthdate verarbeiten (z. B. "1990-01-01")
-        birthdate = None
-        if "birthdate" in data:
-            try:
-                birthdate = datetime.strptime(data["birthdate"], "%Y-%m-%d").date()
-            except ValueError:
-                logging.warning(f"❗ Ungültiges birthdate-Format: {data['birthdate']}")
+        logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
 
-        appointment_data = (
-            data.get("first_name"),
-            data.get("last_name"),
-            birthdate,
-            data.get("phone"),
-            data.get("email"),
-            data.get("symptom"),
-            data.get("symptom_duration"),
-            data.get("address"),
-            data.get("appointment_start"),
-            data.get("appointment_end"),
-            datetime.now(pytz.timezone("Europe/Berlin")),
-            data.get("company_code"),
-            data.get("bot_origin"),
-            data.get("service_type"),
-            data.get("note_internal"),
+        # === Outlook-Kalendereintrag ===
+        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']} ({data['birthday']})<br>Adresse: {data.get('address')}"
+        if data.get('user_message'):
+            outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
+
+        event = {
+            "subject": f"Termin: {data['first_name']} {data['last_name']}",
+            "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
+            "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
+            "body": {"contentType": "HTML", "content": outlook_body},
+            "location": {"displayName": "Praxis LandKI"},
+            "attendees": []
+        }
+        graph_resp = requests.post(
+            'https://graph.microsoft.com/v1.0/me/events',
+            headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'},
+            json=event
         )
+        if graph_resp.status_code != 201:
+            logging.error(f"Outlook Fehler: {graph_resp.text}")
+            return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
+        logging.info("Outlook-Termin eingetragen")
 
-        conn = get_sql_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO appointments (
-                first_name, last_name, birthdate, phone, email, symptom, symptom_duration,
-                address, appointment_start, appointment_end, created_at,
-                company_code, bot_origin, service_type, note_internal
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, appointment_data)
-
+        # === SQL INSERT ===
+        conn = pyodbc.connect(
+            f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};'
+            f'UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO dbo.appointments (
+                first_name, last_name, birthdate, phone, email, address,
+                appointment_start, appointment_end, created_at,
+                company_code, bot_origin, service_type, note_internal, user_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?, ?, ?)
+        """, (
+            data['first_name'],
+            data['last_name'],
+            data['birthday'],
+            data.get('phone'),
+            data['email'],
+            data.get('address'),
+            start_local,
+            end_local,
+            "LANDKI", "GPT-ASSIST", "Standard", "Termin gebucht via Bot",
+            data.get('user_message')
+        ))
         conn.commit()
-        cursor.close()
+        cur.close()
         conn.close()
+        logging.info("SQL-Termin gespeichert")
 
-        logging.info("✅ Termin erfolgreich eingetragen.")
-        return jsonify({"status": "success"}), 200
+        # === DSGVO-konforme E-Mails ===
+        subject = "Ihre Terminbestätigung bei LandKI"
+        html = f"""
+        <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
+        <p>Ihr Termin ist gebucht:</p>
+        <ul>
+            <li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li>
+            <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li>
+        </ul>
+        {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
+        <p>Dies ist eine automatische Terminbestätigung von LandKI.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
+        <p>Mit freundlichen Grüßen<br>Ihr LandKI-Team</p>
+        """
+        for rcp in [data['email'], SMTP_RECIPIENT]:
+            msg = MIMEMultipart()
+            msg['From'] = SMTP_SENDER
+            msg['To'] = rcp
+            msg['Subject'] = subject
+            msg.attach(MIMEText(html, 'html'))
+            with smtplib.SMTP('smtp.office365.com', 587) as s:
+                s.starttls()
+                s.login(SMTP_SENDER, os.environ.get("SMTP_PASSWORD"))
+                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
+        logging.info("Bestätigungs-Mails versendet")
+
+        return jsonify({"status": "success", "message": "Termin gebucht."})
 
     except Exception as e:
-        logging.error(f"❌ Fehler bei Terminbuchung: {str(e)}")
-        return jsonify({"error": "❌ Serverfehler"}), 500
-
-if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+        logging.exception("Fehler bei Terminbuchung")
+        return jsonify({"error": str(e)}), 500
