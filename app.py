@@ -1,7 +1,7 @@
 # app.py – GPT-gestützter LandKI-Terminassistent mit Outlook + SQL + DSGVO-konformer E-Mail
 
 from flask import Flask, request, jsonify, session
-import openai
+from openai import AzureOpenAI  # NEU: GPT-Client ab SDK 1.0+
 import os
 import logging
 from flask_cors import CORS
@@ -80,23 +80,26 @@ Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
             {"role": "user", "content": user_input}
         ]
 
-        response = openai.ChatCompletion.create(
-            api_version="2024-10-21",
-            base_url=os.environ["AZURE_OPENAI_ENDPOINT"],
+        client = AzureOpenAI(
             api_key=os.environ["AZURE_OPENAI_KEY"],
-            engine="gpt-4o",
+            api_version="2024-10-21",
+            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
+        )
+
+        response = client.chat.completions.create(
+            model="gpt-4o",
             messages=messages,
             temperature=0.3
         )
 
-        answer = response["choices"][0]["message"]["content"]
+        answer = response.choices[0].message.content
         return jsonify({"response": answer})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
 
-# === Terminbuchung (/book) bleibt unverändert ===
+# === Terminbuchung ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
@@ -105,14 +108,12 @@ def book():
         return jsonify({"error": "Nicht authentifiziert."}), 401
 
     try:
-        # === Zeiten umwandeln ===
         start_time_utc = datetime.fromisoformat(data['selected_time'])
         start_local = start_time_utc.astimezone(TZ)
         end_local = start_local + timedelta(minutes=30)
 
         logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
 
-        # === Outlook-Kalendereintrag ===
         outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']} ({data['birthday']})<br>Adresse: {data.get('address')}"
         if data.get('user_message'):
             outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
@@ -125,6 +126,7 @@ def book():
             "location": {"displayName": "Praxis LandKI"},
             "attendees": []
         }
+
         graph_resp = requests.post(
             'https://graph.microsoft.com/v1.0/me/events',
             headers={'Authorization': f'Bearer {access_token}', 'Content-Type': 'application/json'},
@@ -135,7 +137,6 @@ def book():
             return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
         logging.info("Outlook-Termin eingetragen")
 
-        # === SQL INSERT ===
         conn = pyodbc.connect(
             f'DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};'
             f'UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;')
@@ -163,7 +164,6 @@ def book():
         conn.close()
         logging.info("SQL-Termin gespeichert")
 
-        # === DSGVO-konforme E-Mails ===
         subject = "Ihre Terminbestätigung bei LandKI"
         html = f"""
         <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
