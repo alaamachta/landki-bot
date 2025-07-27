@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0004
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0005
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI  # Azure SDK ab v1.0+
@@ -78,7 +78,7 @@ Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib
         response = client.chat.completions.create(
             model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
             messages=messages,
-            temperature=0.3  # empfohlen für kurze, präzise Antworten
+            temperature=0.3
         )
 
         return jsonify({"response": response.choices[0].message.content})
