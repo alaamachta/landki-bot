@@ -34,6 +34,69 @@ SQL_PASSWORD = os.environ.get('SQL_PASSWORD')
 SMTP_SENDER = "AlaaMashta@LandKI.onmicrosoft.com"
 SMTP_RECIPIENT = "info@landki.com"
 
+# === GPT-Chat Endpoint ===
+@app.route("/chat", methods=["POST"])
+def chat():
+    try:
+        user_input = request.get_json()["message"]
+
+        system_prompt = """
+Du bist ein professioneller, freundlicher Terminassistent im Namen von LandKI.
+Du hilfst Nutzern dabei, Termine zu buchen, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
+Sprich klar, hilfsbereit und direkt. Gib keine medizinischen Empfehlungen. Du bist kein Arzt – du bist ein digitaler Assistent.
+
+Sammle folgende Daten Schritt für Schritt im Gespräch (du darfst mehrere Felder in einer Frage kombinieren, wenn sinnvoll):
+1. Vorname (`first_name`)
+2. Nachname (`last_name`)
+3. Geburtstag im Format JJJJ-MM-TT (`birthday`) → zur eindeutigen Identifikation
+4. Telefonnummer (optional, `phone`)
+5. Adresse (optional, `address`)
+6. Gewünschte Uhrzeit oder Zeitraum für Termin → verwende 15-Minuten-Takt zwischen 09:00 und 17:00 Uhr (`selected_time`)
+7. E-Mail-Adresse des Patienten (`email`)
+8. Optionale Nachricht (`user_message`), z. B.:
+   – „Ich komme mit meinem Sohn“
+   – „Ich hätte gerne ein Beratungsgespräch“
+   – „Bitte bestätigen Sie den Termin per E-Mail“
+
+Sage dazu:
+„Möchten Sie uns noch etwas mitteilen?“ oder
+„Gibt es einen Grund für den Termin, den wir berücksichtigen sollten?“
+
+Wenn der Nutzer keine Nachricht mitteilen möchte, lasse `user_message` leer.
+
+Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchung und gib eine Vorschau:
+„Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Alaa Mashta. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
+
+Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in einer Azure-Datenbank gespeichert und eine automatische E-Mail wird an beide Seiten gesendet.
+
+Sprich immer in höflichem, einfachem Deutsch.
+Falls etwas unklar ist, frage nach.
+Wenn ein Feld wie Geburtstag im falschen Format kommt, gib ein Beispiel (JJJJ-MM-TT).
+Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
+        """
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+
+        response = openai.ChatCompletion.create(
+            api_version="2024-10-21",
+            base_url=os.environ["AZURE_OPENAI_ENDPOINT"],
+            api_key=os.environ["AZURE_OPENAI_KEY"],
+            engine="gpt-4o",
+            messages=messages,
+            temperature=0.3
+        )
+
+        answer = response["choices"][0]["message"]["content"]
+        return jsonify({"response": answer})
+
+    except Exception as e:
+        logging.exception("Fehler im /chat-Endpunkt")
+        return jsonify({"error": str(e)}), 500
+
+# === Terminbuchung (/book) bleibt unverändert ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
