@@ -1,4 +1,5 @@
-# Version v1.0002 – LandKI-Terminassistent mit Outlook + SQL + E-Mail + GPT-System + DSGVO + Logging + user_message
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand
+# Version: v1.0002 (allgemein – Firma & Kunde statt Praxis & Patient)
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -16,7 +17,6 @@ import requests
 # === Flask Setup ===
 app = Flask(__name__)
 CORS(app)
-app.secret_key = os.environ.get("FLASK_SECRET", "landki-dev-key")
 
 # === Logging ===
 LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "DEBUG")
@@ -25,29 +25,16 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler()]
 )
-logging.Formatter.converter = lambda *args: datetime.now(pytz.timezone('Europe/Berlin')).timetuple()
 
 # === Konfiguration ===
 TZ = pytz.timezone("Europe/Berlin")
-SQL_SERVER = os.environ.get("SQL_SERVER")
-SQL_DB = os.environ.get("SQL_DATABASE")
-SQL_USER = os.environ.get("SQL_USERNAME")
-SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
-SMTP_SENDER = os.environ.get("SMTP_SENDER")
-SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD")
-SMTP_RECIPIENT = os.environ.get("SMTP_RECIPIENT")
-AZURE_DEPLOYMENT_ID = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
-AZURE_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-AZURE_KEY = os.environ.get("AZURE_OPENAI_KEY")
+SQL_SERVER = 'landki-sql-server.database.windows.net'
+SQL_DB = 'landki-db'
+SQL_USER = 'landki.sql.server'
+SQL_PASSWORD = os.environ.get('SQL_PASSWORD')
+SMTP_SENDER = "AlaaMashta@LandKI.onmicrosoft.com"
+SMTP_RECIPIENT = "info@landki.com"
 
-# === GPT Client ===
-client = AzureOpenAI(
-    api_key=AZURE_KEY,
-    api_version="2024-10-21",
-    azure_endpoint=AZURE_ENDPOINT
-)
-
-# === GPT-Chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -55,19 +42,19 @@ def chat():
 
         system_prompt = """
 Du bist ein professioneller, freundlicher Terminassistent im Namen von LandKI.
-Du hilfst Nutzern dabei, Termine zu buchen, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
-Sprich klar, hilfsbereit und direkt. Gib keine medizinischen Empfehlungen. Du bist kein Arzt – du bist ein digitaler Assistent.
+Du hilfst Kunden dabei, Termine mit einer Firma zu vereinbaren, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
+Sprich klar, hilfsbereit und direkt. Gib keine fachlichen Empfehlungen. Du bist kein Berater – du bist ein digitaler Assistent.
 
-Sammle folgende Daten Schritt für Schritt im Gespräch (du darfst mehrere Felder in einer Frage kombinieren, wenn sinnvoll):
+Sammle folgende Daten Schritt für Schritt im Gespräch:
 1. Vorname (`first_name`)
 2. Nachname (`last_name`)
 3. Geburtstag im Format JJJJ-MM-TT (`birthday`) → zur eindeutigen Identifikation
 4. Telefonnummer (optional, `phone`)
 5. Adresse (optional, `address`)
 6. Gewünschte Uhrzeit oder Zeitraum für Termin → verwende 15-Minuten-Takt zwischen 09:00 und 17:00 Uhr (`selected_time`)
-7. E-Mail-Adresse des Patienten (`email`)
+7. E-Mail-Adresse des Kunden (`email`)
 8. Optionale Nachricht (`user_message`), z. B.:
-   – „Ich komme mit meinem Sohn“
+   – „Ich komme mit meinem Kollegen“
    – „Ich hätte gerne ein Beratungsgespräch“
    – „Bitte bestätigen Sie den Termin per E-Mail“
 
@@ -81,6 +68,11 @@ Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchu
 „Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Alaa Mashta. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
 
 Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in einer Azure-Datenbank gespeichert und eine automatische E-Mail wird an beide Seiten gesendet.
+
+Sprich immer in höflichem, einfachem Deutsch.
+Wenn etwas unklar ist, frage nach.
+Wenn ein Feld wie Geburtstag im falschen Format kommt, gib ein Beispiel (JJJJ-MM-TT).
+Wenn kein Termin genannt wurde, frage nach einem freien Zeitraum.
         """
 
         messages = [
@@ -88,8 +80,14 @@ Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in 
             {"role": "user", "content": user_input}
         ]
 
+        client = AzureOpenAI(
+            api_key=os.environ["AZURE_OPENAI_KEY"],
+            api_version=os.environ.get("OPENAI_API_VERSION", "2024-10-21"),
+            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
+        )
+
         response = client.chat.completions.create(
-            model=AZURE_DEPLOYMENT_ID,
+            model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
             messages=messages,
             temperature=0.3
         )
@@ -101,7 +99,6 @@ Die Daten werden DSGVO-konform verarbeitet, im Outlook-Kalender eingetragen, in 
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
 
-# === Terminbuchung ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
@@ -125,7 +122,7 @@ def book():
             "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
             "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
             "body": {"contentType": "HTML", "content": outlook_body},
-            "location": {"displayName": "Praxis LandKI"},
+            "location": {"displayName": "LandKI Meeting"},
             "attendees": []
         }
 
@@ -186,7 +183,7 @@ def book():
             msg.attach(MIMEText(html, 'html'))
             with smtplib.SMTP('smtp.office365.com', 587) as s:
                 s.starttls()
-                s.login(SMTP_SENDER, SMTP_PASSWORD)
+                s.login(SMTP_SENDER, os.environ.get("SMTP_PASSWORD"))
                 s.sendmail(SMTP_SENDER, rcp, msg.as_string())
         logging.info("Bestätigungs-Mails versendet")
 
