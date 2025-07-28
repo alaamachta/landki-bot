@@ -50,9 +50,9 @@ def chat():
 
         system_prompt = (
             "Du bist ein professioneller, geduldiger Terminassistent. Sprich in einfachem, professionellem Deutsch.\n"
-            "Erkenne mehrere Angaben in einer Nachricht und verwende Function Calling, wenn möglich.\n"
-            "Extrahiere: first_name, last_name, email, selected_time (datetime), user_message.\n"
-            "Falls etwas fehlt, frage gezielt nach."
+            "Extrahiere folgende Felder aus Nutzereingaben und gib sie ausschließlich im JSON-Format zurück:\n"
+            "1. first_name\n2. last_name\n3. email\n4. selected_time\n5. user_message\n"
+            "Wenn alle Felder vorhanden sind, gib nur ein valides JSON zurück. Falls etwas fehlt, frage gezielt nach."
         )
 
         messages = [{"role": "system", "content": system_prompt}] + memory
@@ -66,47 +66,35 @@ def chat():
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=messages,
-            temperature=0.3,
-            functions=[
-                {
-                    "name": "book_appointment",
-                    "description": "Bucht einen Termin für den Nutzer",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "first_name": {"type": "string"},
-                            "last_name": {"type": "string"},
-                            "email": {"type": "string"},
-                            "selected_time": {"type": "string", "format": "date-time"},
-                            "user_message": {"type": "string"}
-                        },
-                        "required": ["first_name", "last_name", "email", "selected_time"]
-                    }
-                }
-            ],
-            function_call="auto"
+            temperature=0.3
         )
 
-        choice = response.choices[0].message
-
-        if choice.function_call:
-            arguments = json.loads(choice.function_call.arguments)
-            logging.info("Function Calling: %s", arguments)
-
-            with app.test_client() as client:
-                book_resp = client.post("/book", json=arguments)
-                if book_resp.status_code == 200:
-                    return jsonify({"response": "✅ Termin wurde erfolgreich gebucht."})
-                else:
-                    return jsonify({"response": "⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
-
-        reply = choice.content or "Ich habe deine Nachricht erhalten. Bitte teile mir die fehlenden Daten mit."
+        reply = response.choices[0].message.content
         memory.append({"role": "assistant", "content": reply})
+
+        # Automatisches Erkennen und Buchen, wenn JSON vorhanden
+        if "{" in reply and "}" in reply:
+            import json, re
+            try:
+                json_text = re.search(r"\{.*\}", reply, re.DOTALL).group()
+                payload = json.loads(json_text)
+
+                with app.test_client() as client:
+                    book_resp = client.post("/book", json=payload)
+                    if book_resp.status_code == 200:
+                        return jsonify({"response": reply + "\n\n✅ Termin wurde erfolgreich gebucht."})
+                    else:
+                        return jsonify({"response": reply + "\n\n⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
+
+            except Exception as auto_error:
+                logging.warning(f"Fehler beim Parsen der JSON-Daten: {auto_error}")
+
         return jsonify({"response": reply})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 
 # === /book Endpoint ===
