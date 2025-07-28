@@ -1,8 +1,8 @@
-# app.py – LandKI-Terminassistent v1.0015 mit Outlook, SQL, Mail, GPT & Loop-Schutz
+# app.py – LandKI-Terminassistent v1.0016 mit GPT Function Calling, Outlook, SQL & E-Mail
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
-import os, logging, uuid, requests, pytz, pyodbc, smtplib, dateparser
+import os, logging, uuid, requests, pytz, pyodbc, smtplib, dateparser, json
 from datetime import datetime, timedelta
 from flask_cors import CORS
 from email.mime.text import MIMEText
@@ -34,7 +34,6 @@ AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 BIRTHDAY_REQUIRED = False
 
-# === Konversationszustand ===
 conversation_memory = {}
 MAX_HISTORY = 20
 
@@ -50,23 +49,11 @@ def chat():
         memory[:] = memory[-MAX_HISTORY:]
 
         system_prompt = (
-            "Du bist ein professioneller, geduldiger Terminassistent. "
-            "Sprich in einfachem, professionellem Deutsch.\n"
-            "Erkenne mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
-            "1. Vorname (`first_name`)\n"
-            "2. Nachname (`last_name`)\n"
-            + ("3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else "")
-            + "3. E-Mail-Adresse (`email`)\n"
-            "4. Wunschtermin (`selected_time`) – z. B. „morgen“, „am Freitag um 10 Uhr“\n"
-            "5. Grund / Nachricht (`user_message`)\n"
-            "Wenn alle Felder erkannt sind, fasse sie zusammen und sende JSON-Daten für die Buchung.\n"
-            "Format:\n"
-            "```json\n"
-            "{ \"first_name\": \"...\", \"last_name\": \"...\", \"email\": \"...\", \"selected_time\": \"...\", \"user_message\": \"...\" }\n"
-            "```\n"
-            "Wenn etwas fehlt, frage gezielt nach. Antworte klar, ohne doppelte Fragen."
+            "Du bist ein professioneller, geduldiger Terminassistent. Sprich in einfachem, professionellem Deutsch.\n"
+            "Erkenne mehrere Angaben in einer Nachricht und verwende Function Calling, wenn möglich.\n"
+            "Extrahiere: first_name, last_name, email, selected_time (datetime), user_message.\n"
+            "Falls etwas fehlt, frage gezielt nach."
         )
-
 
         messages = [{"role": "system", "content": system_prompt}] + memory
 
@@ -79,38 +66,47 @@ def chat():
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=messages,
-            temperature=0.3
+            temperature=0.3,
+            functions=[
+                {
+                    "name": "book_appointment",
+                    "description": "Bucht einen Termin für den Nutzer",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "first_name": {"type": "string"},
+                            "last_name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "selected_time": {"type": "string", "format": "date-time"},
+                            "user_message": {"type": "string"}
+                        },
+                        "required": ["first_name", "last_name", "email", "selected_time"]
+                    }
+                }
+            ],
+            function_call="auto"
         )
 
-        reply = response.choices[0].message.content
+        choice = response.choices[0].message
+
+        if choice.function_call:
+            arguments = json.loads(choice.function_call.arguments)
+            logging.info("Function Calling: %s", arguments)
+
+            with app.test_client() as client:
+                book_resp = client.post("/book", json=arguments)
+                if book_resp.status_code == 200:
+                    return jsonify({"response": "✅ Termin wurde erfolgreich gebucht."})
+                else:
+                    return jsonify({"response": "⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
+
+        reply = choice.content or "Ich habe deine Nachricht erhalten. Bitte teile mir die fehlenden Daten mit."
         memory.append({"role": "assistant", "content": reply})
-
-        # Versuch JSON aus Antwort zu extrahieren und automatisch /book aufzurufen
-        if "{" in reply and "}" in reply:
-            import json, re
-            try:
-                json_text = re.search(r"\{.*?\}", reply, re.DOTALL).group()
-                payload = json.loads(json_text)
-
-                # automatische Buchung starten
-                with app.test_client() as client:
-                    book_resp = client.post("/book", json=payload)
-                    if book_resp.status_code == 200:
-                        return jsonify({"response": reply + "\n\n✅ Termin wurde erfolgreich gebucht."})
-                    else:
-                        return jsonify({"response": reply + "\n\n⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
-
-            except Exception as auto_error:
-                logging.warning(f"Keine gültige Buchungsdaten erkannt: {auto_error}")
-
         return jsonify({"response": reply})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
-
-
-
 
 
 # === /book Endpoint ===
