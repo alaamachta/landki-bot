@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0021 mit echtem GPT Function Calling, Outlook, SQL & E-Mail
+# app.py – LandKI-Terminassistent v1.0022 – mit erweitertem Fehler-Logging und Debug
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -80,7 +80,6 @@ def chat():
 
         choice = response.choices[0]
 
-        # Neues Format: tool_calls (statt function_call)
         if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
             for tool_call in choice.message.tool_calls:
                 if tool_call.function.name == "book_appointment":
@@ -91,9 +90,8 @@ def chat():
                         if book_resp.status_code == 200:
                             return jsonify({"response": "✅ Termin erfolgreich gebucht."})
                         else:
-                            return jsonify({"response": "⚠️ Fehler bei der Buchung.", "book_error": result})
+                            return jsonify({"response": f"⚠️ Fehler: {result.get('error', 'Unbekannt')}"})
 
-        # Normale Textantwort
         return jsonify({"response": choice.message.content})
 
     except Exception as e:
@@ -104,6 +102,7 @@ def chat():
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
+    logging.info("🛠️ /book wurde aufgerufen.")
     access_token = session.get("access_token")
 
     if not access_token:
@@ -199,4 +198,3 @@ def book():
     except Exception as e:
         logging.exception("❌ Allgemeiner Fehler bei Terminbuchung")
         return jsonify({"error": f"Fehler bei der Buchung: {str(e)}"}), 500
-
