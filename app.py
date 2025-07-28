@@ -55,23 +55,27 @@ def chat():
                  "Du bist ein freundlicher deutschsprachiger Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze Function Calling, wenn alle Daten vorliegen."},
                 {"role": "user", "content": user_input},
             ],
-            functions=[{
-                "name": "book_appointment",
-                "description": "Bucht einen Termin in Outlook, speichert ihn in SQL und versendet E-Mails",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "first_name": {"type": "string"},
-                        "last_name": {"type": "string"},
-                        "email": {"type": "string"},
-                        "selected_time": {"type": "string", "format": "date-time"},
-                        "user_message": {"type": "string"}
-                    },
-                    "required": ["first_name", "last_name", "email", "selected_time"]
+            tools=[{
+                "type": "function",
+                "function": {
+                    "name": "book_appointment",
+                    "description": "Bucht einen Termin in Outlook, speichert ihn in SQL und versendet E-Mails",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "first_name": {"type": "string"},
+                            "last_name": {"type": "string"},
+                            "email": {"type": "string"},
+                            "selected_time": {"type": "string", "format": "date-time"},
+                            "user_message": {"type": "string"}
+                        },
+                        "required": ["first_name", "last_name", "email", "selected_time"]
+                    }
                 }
             }],
             tool_choice="auto"
         )
+
 
         choice = response.choices[0]
         if choice.finish_reason == "function_call":
