@@ -1,12 +1,13 @@
-# app.py – LandKI-Terminassistent v1.0022 – mit erweitertem Fehler-Logging und Debug
+# app.py – LandKI-Terminassistent v1.0023 – mit Outlook-Login (MSAL), GPT, SQL, Mail
 
-from flask import Flask, request, jsonify, session
+from flask import Flask, request, jsonify, session, redirect, url_for
 from openai import AzureOpenAI
 import os, logging, uuid, requests, pytz, pyodbc, smtplib, json
 from datetime import datetime, timedelta
 from flask_cors import CORS
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from msal import ConfidentialClientApplication
 
 # === Flask Setup ===
 app = Flask(__name__)
@@ -32,6 +33,56 @@ AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
+
+# === MSAL Konfiguration ===
+CLIENT_ID = os.environ.get("MS_CLIENT_ID")
+CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
+TENANT_ID = os.environ.get("MS_TENANT_ID")
+REDIRECT_URI = os.environ.get("MS_REDIRECT_URI") or "https://landki-bot-app-hrbtfefhgvasc5gk.germanywestcentral-01.azurewebsites.net/callback"
+AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite", "https://graph.microsoft.com/User.Read"]
+
+# === Outlook Login ===
+@app.route("/calendar")
+def calendar():
+    msal_app = ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET
+    )
+    state = str(uuid.uuid4())
+    session["state"] = state
+    auth_url = msal_app.get_authorization_request_url(SCOPES, state=state, redirect_uri=REDIRECT_URI)
+    logging.info("🔐 Weiterleitung zu Microsoft Login: " + auth_url)
+    return redirect(auth_url)
+
+@app.route("/callback")
+def authorized():
+    if request.args.get("state") != session.get("state"):
+        return "⚠️ Sitzung abgelaufen oder ungültig. Bitte neu starten.", 400
+
+    code = request.args.get("code")
+    if not code:
+        return "⚠️ Kein Autorisierungscode erhalten.", 400
+
+    msal_app = ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET
+    )
+    result = msal_app.acquire_token_by_authorization_code(
+        code,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI
+    )
+
+    if "access_token" in result:
+        session["access_token"] = result["access_token"]
+        logging.info("✅ Zugriffstoken erfolgreich gespeichert.")
+        return "✅ Outlook-Login erfolgreich. Du kannst nun zurück zum Chat."
+    else:
+        logging.error("❌ Fehler beim Login: " + json.dumps(result, indent=2))
+        return "❌ Fehler beim Abrufen des Tokens. Siehe Log.", 500
 
 # === GPT Chat Endpoint ===
 @app.route("/chat", methods=["POST"])
