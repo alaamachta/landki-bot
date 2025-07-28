@@ -51,45 +51,49 @@ def chat():
             model=AZURE_OPENAI_DEPLOYMENT,
             temperature=0.2,
             messages=[
-                {"role": "system", "content": "Du bist ein freundlicher deutschsprachiger Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze tools, wenn alle Daten vorliegen."},
+                {"role": "system", "content":
+                 "Du bist ein freundlicher deutschsprachiger Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze Function Calling, wenn alle Daten vorliegen."},
                 {"role": "user", "content": user_input},
             ],
-            tools=[{
-                "type": "function",
-                "function": {
-                    "name": "book_appointment",
-                    "description": "Bucht einen Termin in Outlook, speichert ihn in SQL und versendet E-Mails",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "first_name": {"type": "string"},
-                            "last_name": {"type": "string"},
-                            "email": {"type": "string"},
-                            "selected_time": {"type": "string", "format": "date-time"},
-                            "user_message": {"type": "string"}
-                        },
-                        "required": ["first_name", "last_name", "email", "selected_time"]
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "book_appointment",
+                        "description": "Bucht einen Termin in Outlook, speichert ihn in SQL und versendet E-Mails",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "first_name": {"type": "string"},
+                                "last_name": {"type": "string"},
+                                "email": {"type": "string"},
+                                "selected_time": {"type": "string", "format": "date-time"},
+                                "user_message": {"type": "string"}
+                            },
+                            "required": ["first_name", "last_name", "email", "selected_time"]
+                        }
                     }
                 }
-            }],
+            ],
             tool_choice="auto"
         )
 
-
-
         choice = response.choices[0]
-        if choice.finish_reason == "function_call":
-            call = choice.message.function_call
-            args = json.loads(call.arguments)
-            with app.test_client() as client:
-                book_resp = client.post("/book", json=args)
-                result = book_resp.get_json()
-                if book_resp.status_code == 200:
-                    return jsonify({"response": "✅ Termin erfolgreich gebucht."})
-                else:
-                    return jsonify({"response": "⚠️ Fehler bei der Buchung.", "book_error": result})
 
-        # sonst normale Textantwort zurückgeben
+        # Neues Format: tool_calls (statt function_call)
+        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+            for tool_call in choice.message.tool_calls:
+                if tool_call.function.name == "book_appointment":
+                    args = json.loads(tool_call.function.arguments)
+                    with app.test_client() as client:
+                        book_resp = client.post("/book", json=args)
+                        result = book_resp.get_json()
+                        if book_resp.status_code == 200:
+                            return jsonify({"response": "✅ Termin erfolgreich gebucht."})
+                        else:
+                            return jsonify({"response": "⚠️ Fehler bei der Buchung.", "book_error": result})
+
+        # Normale Textantwort
         return jsonify({"response": choice.message.content})
 
     except Exception as e:
