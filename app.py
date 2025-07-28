@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0013 mit Outlook, SQL, Mail & stabilisiertem Prompt
+# app.py – LandKI-Terminassistent v1.0014 mit Loop-Schutz, Outlook, SQL, Mail & GPT
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -58,22 +58,17 @@ def chat():
         memory[:] = memory[-MAX_HISTORY:]
 
         system_prompt = f"""
-Du bist ein professioneller Terminassistent der Firma LandKI. Du hilfst Kunden beim Buchen eines Termins.
-Sprich klar, direkt und in einfachem Deutsch.
-
-Frage Schritt für Schritt nach den folgenden Daten – aber **niemals doppelt**, wenn sie bereits genannt wurden:
-
-1. Vorname → speichere als: `first_name`
-2. Nachname → `last_name`
-{'3. Geburtstag (JJJJ-MM-TT)' if BIRTHDAY_REQUIRED else ''}
-3. E-Mail-Adresse → `email`
-4. Wunschtermin → erkenne natürliche Sprache wie "morgen", "Freitag 10 Uhr" → `selected_time`
-5. Nachricht oder Grund des Termins → `user_message`
-
-Sobald du alle Angaben hast, fasse sie in einer Liste zusammen (z. B. `✅ Termin kann gebucht werden`) und leite die Buchung ein.
-
-Antworte **niemals doppelt**, wenn ein Name oder Feld bereits vorhanden ist. Du kannst notfalls **nachfragen, ob etwas korrekt war**, aber wiederhole keine Daten mehrfach.
-"""
+Du bist ein professioneller Terminassistent. Sprich in einfachem, professionellem Deutsch.
+Frage nur nach den **fehlenden Angaben** – vermeide Wiederholungen.
+Benötigte Felder:
+1. Vorname (`first_name`)
+2. Nachname (`last_name`)
+{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n' if BIRTHDAY_REQUIRED else ''}3. E-Mail-Adresse (`email`)
+4. Wunschtermin (`selected_time`) – erkenne auch Wörter wie "morgen", "am Freitag um 10 Uhr"
+5. Nachricht / Grund (`user_message`) – z. B.: „Möchten Sie uns noch etwas mitteilen?“
+Wenn alle Felder erkannt wurden, fasse sie kompakt zusammen und leite automatisch die Buchung ein.
+Wenn etwas unklar ist (z. B. „Ich schwöre Mashta“), antworte höflich und frage erneut konkret nach.
+        """
 
         messages = [{"role": "system", "content": system_prompt}] + memory
 
@@ -96,6 +91,7 @@ Antworte **niemals doppelt**, wenn ein Name oder Feld bereits vorhanden ist. Du 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 # === Terminbuchung ===
 @app.route("/book", methods=["POST"])
