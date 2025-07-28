@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0009 mit smarter Datumserkennung, optionalem Geburtstag und Grundabfrage
+# app.py – LandKI-Terminassistent mit Outlook + SQL + E-Mail-Versand – Version v1.0009
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -12,15 +12,15 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import requests
-import dateparser  # für natürlichsprachliche Zeitangaben
 
-# === Flask Setup ===
+# === Flask App Setup ===
 app = Flask(__name__)
 CORS(app)
 
 # === Logging Setup ===
+LOG_LEVEL = os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO")
 logging.basicConfig(
-    level=os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO"),
+    level=LOG_LEVEL,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler()]
 )
@@ -34,32 +34,34 @@ SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
 SMTP_SENDER = os.environ.get("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
 
-# === Steuerung: Geburtstagsfeld aktiv? ===
-BIRTHDAY_REQUIRED = False  # Für Praxen True, sonst False
-
 # === GPT-Chat-Endpunkt ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
         user_input = request.get_json()["message"]
 
-        system_prompt = f"""
-Du bist ein professioneller Terminassistent einer Firma (kein Arzt). Du hilfst Kunden beim Buchen eines Termins.
+        system_prompt = """
+Du bist ein professioneller, freundlicher Terminassistent im Namen einer Firma.
+Du hilfst Kunden dabei, Termine zu buchen, Daten korrekt zu erfassen und eine Bestätigung zu verschicken.
+Sprich klar, hilfsbereit und direkt. Gib keine medizinischen Empfehlungen. Du bist kein Arzt – du bist ein digitaler Assistent.
 
-Sprich freundlich, präzise, direkt und in **einfach verständlichem Deutsch**.
-
-Frage nach folgenden Daten – du darfst sie kombinieren, aber NICHT überspringen:
+Sammle folgende Daten Schritt für Schritt (du darfst mehrere Felder in einer Frage kombinieren):
 1. Vorname (`first_name`)
 2. Nachname (`last_name`)
-{'3. Geburtstag im Format JJJJ-MM-TT (`birthday`)\n' if BIRTHDAY_REQUIRED else ''}3. E-Mail-Adresse (`email`)
-4. Wunschtermin (`selected_time`) – erkenne auch natürliche Sprache wie "morgen", "am Freitag um 10 Uhr", "übermorgen 15 Uhr"
-5. Grund / Nachricht (`user_message`) – Frage IMMER danach, z. B.: „Möchten Sie uns noch etwas mitteilen?“
+3. Geburtstag im Format JJJJ-MM-TT (`birthday`)
+4. Telefonnummer (optional, `phone`)
+5. Adresse (optional, `address`)
+6. Terminzeit im 15-Minuten-Takt zwischen 09:00–17:00 Uhr (`selected_time`)
+7. E-Mail-Adresse (`email`)
+8. Optionale Nachricht (`user_message`)
 
-Wunschtermin: Falls der Kunde ein Datum wie „Montag 15 Uhr“ nennt, versuche es zu erkennen (Beispiel: 2025-07-29T15:00). 
-Wenn der Termin nicht verfügbar ist oder fehlt, schlage andere Zeiten vor: 
-„Der gewünschte Termin ist leider belegt. Ich kann folgende Alternativen anbieten: 29.07 um 16:00 oder 30.07 vormittags. Wählen Sie bitte einen davon.“
+Frage: „Möchten Sie uns noch etwas mitteilen?“ oder „Gibt es einen Grund für den Termin?“
+Wenn keine Nachricht: `user_message` leer lassen.
 
-Sobald alle Daten vorhanden sind, fasse sie in einer kurzen Liste zusammen und leite die Buchung automatisch ein.
+Sobald alle Pflichtfelder vorhanden sind, übergib die Daten gesammelt zur Buchung und sage:
+„Ich habe alle Angaben erhalten. Ich buche den Termin am 28.07. um 10:00 Uhr für Max Mustermann. Sie erhalten in Kürze eine Bestätigung per E-Mail.“
+
+Sprich in höflichem, einfachem Deutsch. Falls etwas unklar ist, frage nach. Gib Format-Beispiel für Geburtsdatum.
         """
 
         messages = [
@@ -85,6 +87,7 @@ Sobald alle Daten vorhanden sind, fasse sie in einer kurzen Liste zusammen und l
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
 
+
 # === Terminbuchung: Outlook + SQL + E-Mail ===
 @app.route("/book", methods=["POST"])
 def book():
@@ -100,9 +103,8 @@ def book():
 
         logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
 
-        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']}<br>E-Mail: {data['email']}"
-        if BIRTHDAY_REQUIRED:
-            outlook_body += f"<br>Geburtstag: {data['birthday']}"
+        # === Outlook-Termin ===
+        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']}<br>Geburtsdatum: {data['birthday']}<br>Adresse: {data.get('address')}"
         if data.get('user_message'):
             outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
 
@@ -142,7 +144,7 @@ def book():
         """, (
             data['first_name'],
             data['last_name'],
-            data.get('birthday') if BIRTHDAY_REQUIRED else None,
+            data['birthday'],
             data.get('phone'),
             data['email'],
             data.get('address'),
