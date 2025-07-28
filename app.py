@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0016 mit GPT Function Calling, Outlook, SQL & E-Mail
+# app.py – LandKI-Terminassistent v1.0020 mit GPT Function Calling, Outlook, SQL & E-Mail
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -34,10 +34,11 @@ AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 BIRTHDAY_REQUIRED = False
 
+# === Konversationszustand ===
 conversation_memory = {}
 MAX_HISTORY = 20
 
-# === GPT Chat Endpoint ===
+# === GPT Chat mit Function Calling ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -49,11 +50,30 @@ def chat():
         memory[:] = memory[-MAX_HISTORY:]
 
         system_prompt = (
-            "Du bist ein professioneller, geduldiger Terminassistent. Sprich in einfachem, professionellem Deutsch.\n"
-            "Extrahiere folgende Felder aus Nutzereingaben und gib sie ausschließlich im JSON-Format zurück:\n"
-            "1. first_name\n2. last_name\n3. email\n4. selected_time\n5. user_message\n"
-            "Wenn alle Felder vorhanden sind, gib nur ein valides JSON zurück. Falls etwas fehlt, frage gezielt nach."
+            "Du bist ein professioneller Terminassistent. Sprich in einfachem Deutsch.\n"
+            "Deine Aufgabe: Analysiere die Nutzereingabe und erkenne folgende Felder:\n"
+            "- first_name, last_name, email, selected_time (z.B. 'morgen 10 Uhr'), user_message\n"
+            "Wenn alle Felder erkannt sind, rufe die Funktion `book_appointment` auf.\n"
+            "Wenn etwas fehlt, frage gezielt danach."
         )
+
+        functions = [
+            {
+                "name": "book_appointment",
+                "description": "Bucht einen Termin, wenn alle Felder vollständig sind.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "first_name": {"type": "string"},
+                        "last_name": {"type": "string"},
+                        "email": {"type": "string"},
+                        "selected_time": {"type": "string"},
+                        "user_message": {"type": "string"},
+                    },
+                    "required": ["first_name", "last_name", "email", "selected_time", "user_message"]
+                }
+            }
+        ]
 
         messages = [{"role": "system", "content": system_prompt}] + memory
 
@@ -66,120 +86,29 @@ def chat():
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             messages=messages,
-            temperature=0.3
+            functions=functions,
+            function_call="auto",
+            temperature=0.2
         )
 
-        reply = response.choices[0].message.content
-        memory.append({"role": "assistant", "content": reply})
+        reply = response.choices[0].message
+        memory.append({"role": "assistant", "content": reply.content or ""})
 
-        # Automatisches Erkennen und Buchen, wenn JSON vorhanden
-        if "{" in reply and "}" in reply:
-            import json, re
+        # Wenn GPT eine Funktion aufruft:
+        if reply.function_call and reply.function_call.name == "book_appointment":
             try:
-                json_text = re.search(r"\{.*\}", reply, re.DOTALL).group()
-                payload = json.loads(json_text)
-
+                payload = json.loads(reply.function_call.arguments)
                 with app.test_client() as client:
                     book_resp = client.post("/book", json=payload)
                     if book_resp.status_code == 200:
-                        return jsonify({"response": reply + "\n\n✅ Termin wurde erfolgreich gebucht."})
+                        return jsonify({"response": "✅ Termin wurde erfolgreich gebucht."})
                     else:
-                        return jsonify({"response": reply + "\n\n⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
-
+                        return jsonify({"response": "⚠️ Fehler bei der Buchung.", "error": book_resp.get_json()})
             except Exception as auto_error:
-                logging.warning(f"Fehler beim Parsen der JSON-Daten: {auto_error}")
+                logging.warning(f"Fehler bei automatischer Buchung: {auto_error}")
 
-        return jsonify({"response": reply})
+        return jsonify({"response": reply.content})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
-        return jsonify({"error": str(e)}), 500
-
-
-
-# === /book Endpoint ===
-@app.route("/book", methods=["POST"])
-def book():
-    data = request.get_json()
-    access_token = session.get("access_token")
-    if not access_token:
-        return jsonify({"error": "Nicht authentifiziert."}), 401
-
-    try:
-        start_time_utc = datetime.fromisoformat(data['selected_time'])
-        start_local = start_time_utc.astimezone(TZ)
-        end_local = start_local + timedelta(minutes=30)
-
-        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']}<br>E-Mail: {data['email']}"
-        if BIRTHDAY_REQUIRED:
-            outlook_body += f"<br>Geburtstag: {data['birthday']}"
-        if data.get('user_message'):
-            outlook_body += f"<br><strong>Nachricht:</strong><br>{data['user_message']}"
-
-        event = {
-            "subject": f"Termin: {data['first_name']} {data['last_name']}",
-            "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
-            "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
-            "body": {"contentType": "HTML", "content": outlook_body},
-            "location": {"displayName": "LandKI Kalender"},
-            "attendees": []
-        }
-
-        resp = requests.post(
-            'https://graph.microsoft.com/v1.0/me/events',
-            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
-            json=event
-        )
-        if resp.status_code != 201:
-            logging.error(f"Outlook Fehler: {resp.text}")
-            return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
-
-        conn = pyodbc.connect(
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
-            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO dbo.appointments (
-                first_name, last_name, birthdate, phone, email, address,
-                appointment_start, appointment_end, created_at,
-                company_code, bot_origin, service_type, note_internal, user_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?, ?, ?)
-        """, (
-            data['first_name'], data['last_name'],
-            data.get('birthday') if BIRTHDAY_REQUIRED else None,
-            data.get('phone'), data['email'], data.get('address'),
-            start_local, end_local, "LANDKI", "GPT-ASSIST", "Standard",
-            "Termin gebucht via Bot", data.get('user_message')
-        ))
-        conn.commit()
-        cur.close()
-        conn.close()
-
-        subject = "Ihre Terminbestätigung"
-        html = f"""
-        <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
-        <p>Ihr Termin ist gebucht:</p>
-        <ul><li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li>
-        <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li></ul>
-        {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
-        <p>Dies ist eine automatische Terminbestätigung.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
-        <p>Mit freundlichen Grüßen<br>Ihr Team</p>
-        """
-
-        for rcp in [data['email'], SMTP_RECIPIENT]:
-            msg = MIMEMultipart()
-            msg['From'] = SMTP_SENDER
-            msg['To'] = rcp
-            msg['Subject'] = subject
-            msg.attach(MIMEText(html, 'html'))
-            with smtplib.SMTP('smtp.office365.com', 587) as s:
-                s.starttls()
-                s.login(SMTP_SENDER, os.getenv("SMTP_PASSWORD"))
-                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
-
-        return jsonify({"status": "success", "message": "Termin gebucht."})
-
-    except Exception as e:
-        logging.exception("Fehler bei Terminbuchung")
         return jsonify({"error": str(e)}), 500
