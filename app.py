@@ -55,8 +55,8 @@ def chat():
             "Erkenne mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
             "1. Vorname (`first_name`)\n"
             "2. Nachname (`last_name`)\n"
-            f"{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\\n' if BIRTHDAY_REQUIRED else ''}"
-            "3. E-Mail-Adresse (`email`)\n"
+            + ("3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else "")
+            + "3. E-Mail-Adresse (`email`)\n"
             "4. Wunschtermin (`selected_time`) – z. B. „morgen“, „am Freitag um 10 Uhr“\n"
             "5. Grund / Nachricht (`user_message`)\n"
             "Wenn alle Felder erkannt sind, fasse sie zusammen und sende JSON-Daten für die Buchung.\n"
@@ -66,6 +66,7 @@ def chat():
             "```\n"
             "Wenn etwas fehlt, frage gezielt nach. Antworte klar, ohne doppelte Fragen."
         )
+
 
         messages = [{"role": "system", "content": system_prompt}] + memory
 
