@@ -51,10 +51,7 @@ def chat():
             model=AZURE_OPENAI_DEPLOYMENT,
             temperature=0.2,
             messages=[
-                {"role": "system", "content": 
-                "Du bist ein intelligenter, deutschsprachiger Terminassistent. Wenn der Nutzer alle erforderlichen Daten nennt (Vorname, Nachname, E-Mail, Uhrzeit), rufe automatisch die Funktion 'book_appointment' auf. \
-                Gib keine normale Textantwort zurück, wenn du stattdessen einen Function-Call machen kannst. Achte darauf, dass 'selected_time' im ISO-Format (z. B. 2025-07-28T13:00:00) übergeben wird. \
-                Ignoriere irrelevante Daten. Rückfragen nur, wenn wirklich etwas fehlt."},
+                {"role": "system", "content": "Du bist ein freundlicher deutschsprachiger Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze tools, wenn alle Daten vorliegen."},
                 {"role": "user", "content": user_input},
             ],
             tools=[{
@@ -77,6 +74,7 @@ def chat():
             }],
             tool_choice="auto"
         )
+
 
 
         choice = response.choices[0]
