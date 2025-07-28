@@ -57,13 +57,15 @@ def chat():
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
+        birthday_text = "3. Geburtstag im Format JJJJ-MM-TT (`birthday`)\n" if BIRTHDAY_REQUIRED else ""
+
         system_prompt = f"""
 Du bist ein professioneller Terminassistent einer Firma (kein Arzt). Du hilfst Kunden beim Buchen eines Termins.
 Sprich freundlich, präzise, direkt und in **einfach verständlichem Deutsch**.
 Frage nach folgenden Daten – du darfst sie kombinieren, aber NICHT überspringen:
 1. Vorname (`first_name`)
 2. Nachname (`last_name`)
-{'3. Geburtstag im Format JJJJ-MM-TT (`birthday`)\n' if BIRTHDAY_REQUIRED else ''}3. E-Mail-Adresse (`email`)
+{birthday_text}3. E-Mail-Adresse (`email`)
 4. Wunschtermin (`selected_time`) – erkenne auch natürliche Sprache wie "morgen", "am Freitag um 10 Uhr"
 5. Grund / Nachricht (`user_message`) – Frage IMMER danach, z. B.: „Möchten Sie uns noch etwas mitteilen?“
 Sobald alle Daten vorhanden sind, fasse sie in einer Liste zusammen und leite die Buchung automatisch ein.
