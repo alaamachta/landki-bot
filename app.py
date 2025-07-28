@@ -1,19 +1,12 @@
-# app.py – LandKI-Terminassistent v1.0014 mit Loop-Schutz, Outlook, SQL, Mail & GPT
+# app.py – LandKI-Terminassistent v1.0015 mit Outlook, SQL, Mail, GPT & Loop-Schutz
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
-import os
-import logging
-from flask_cors import CORS
+import os, logging, uuid, requests, pytz, pyodbc, smtplib, dateparser
 from datetime import datetime, timedelta
-import pytz
-import pyodbc
-import smtplib
+from flask_cors import CORS
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import requests
-import uuid
-import dateparser
 
 # === Flask Setup ===
 app = Flask(__name__)
@@ -29,23 +22,23 @@ logging.basicConfig(
 
 # === Konfiguration ===
 TZ = pytz.timezone("Europe/Berlin")
-SQL_SERVER = os.environ.get("SQL_SERVER")
-SQL_DB = os.environ.get("SQL_DATABASE")
-SQL_USER = os.environ.get("SQL_USERNAME")
-SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
-SMTP_SENDER = os.environ.get("EMAIL_SENDER")
+SQL_SERVER = os.getenv("SQL_SERVER")
+SQL_DB = os.getenv("SQL_DATABASE")
+SQL_USER = os.getenv("SQL_USERNAME")
+SQL_PASSWORD = os.getenv("SQL_PASSWORD")
+SMTP_SENDER = os.getenv("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
-AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
+OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-10-21")
 BIRTHDAY_REQUIRED = False
 
-# === Konversationszustand ===
+# === Konversationsspeicher ===
 conversation_memory = {}
 MAX_HISTORY = 20
 
-# === GPT Chat Endpoint ===
+# === /chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -53,17 +46,17 @@ def chat():
         session_id = session.get("id") or str(uuid.uuid4())
         session["id"] = session_id
         memory = conversation_memory.setdefault(session_id, [])
-
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
+        birthday_field = "3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else ""
         system_prompt = (
             "Du bist ein professioneller Terminassistent. Sprich in einfachem, professionellem Deutsch.\n"
             "Frage nur nach den **fehlenden Angaben** – vermeide Wiederholungen.\n"
             "Benötigte Felder:\n"
             "1. Vorname (`first_name`)\n"
             "2. Nachname (`last_name`)\n"
-            f"{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n' if BIRTHDAY_REQUIRED else ''}"
+            f"{birthday_field}"
             "3. E-Mail-Adresse (`email`)\n"
             "4. Wunschtermin (`selected_time`) – erkenne auch Wörter wie \"morgen\", \"am Freitag um 10 Uhr\"\n"
             "5. Nachricht / Grund (`user_message`) – z. B.: „Möchten Sie uns noch etwas mitteilen?“\n"
@@ -71,21 +64,9 @@ def chat():
             "Wenn etwas unklar ist (z. B. „Ich schwöre Mashta“), antworte höflich und frage erneut konkret nach."
         )
 
-
         messages = [{"role": "system", "content": system_prompt}] + memory
-
-        client = AzureOpenAI(
-            api_key=AZURE_OPENAI_KEY,
-            api_version=OPENAI_API_VERSION,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT
-        )
-
-        response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=messages,
-            temperature=0.3
-        )
-
+        client = AzureOpenAI(api_key=AZURE_OPENAI_KEY, api_version=OPENAI_API_VERSION, azure_endpoint=AZURE_OPENAI_ENDPOINT)
+        response = client.chat.completions.create(model=AZURE_OPENAI_DEPLOYMENT, messages=messages, temperature=0.3)
         reply = response.choices[0].message.content
         memory.append({"role": "assistant", "content": reply})
         return jsonify({"response": reply})
@@ -95,7 +76,7 @@ def chat():
         return jsonify({"error": str(e)}), 500
 
 
-# === Terminbuchung ===
+# === /book Endpoint ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
@@ -134,7 +115,8 @@ def book():
 
         conn = pyodbc.connect(
             f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
-            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;")
+            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+        )
         cur = conn.cursor()
         cur.execute("""
             INSERT INTO dbo.appointments (
@@ -143,16 +125,11 @@ def book():
                 company_code, bot_origin, service_type, note_internal, user_message
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?, ?, ?)
         """, (
-            data['first_name'],
-            data['last_name'],
+            data['first_name'], data['last_name'],
             data.get('birthday') if BIRTHDAY_REQUIRED else None,
-            data.get('phone'),
-            data['email'],
-            data.get('address'),
-            start_local,
-            end_local,
-            "LANDKI", "GPT-ASSIST", "Standard", "Termin gebucht via Bot",
-            data.get('user_message')
+            data.get('phone'), data['email'], data.get('address'),
+            start_local, end_local, "LANDKI", "GPT-ASSIST", "Standard",
+            "Termin gebucht via Bot", data.get('user_message')
         ))
         conn.commit()
         cur.close()
@@ -162,7 +139,8 @@ def book():
         html = f"""
         <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
         <p>Ihr Termin ist gebucht:</p>
-        <ul><li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li><li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li></ul>
+        <ul><li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li>
+        <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li></ul>
         {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
         <p>Dies ist eine automatische Terminbestätigung.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
         <p>Mit freundlichen Grüßen<br>Ihr Team</p>
@@ -176,7 +154,7 @@ def book():
             msg.attach(MIMEText(html, 'html'))
             with smtplib.SMTP('smtp.office365.com', 587) as s:
                 s.starttls()
-                s.login(SMTP_SENDER, os.environ.get("SMTP_PASSWORD"))
+                s.login(SMTP_SENDER, os.getenv("SMTP_PASSWORD"))
                 s.sendmail(SMTP_SENDER, rcp, msg.as_string())
 
         return jsonify({"status": "success", "message": "Termin gebucht."})
