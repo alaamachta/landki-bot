@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0012 mit Outlook, SQL, Mail & conversation_state
+# app.py – LandKI-Terminassistent v1.0013 mit Outlook, SQL, Mail & stabilisiertem Prompt
 
 from flask import Flask, request, jsonify, session
 from openai import AzureOpenAI
@@ -57,19 +57,23 @@ def chat():
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
-        birthday_text = "3. Geburtstag im Format JJJJ-MM-TT (`birthday`)\n" if BIRTHDAY_REQUIRED else ""
-
         system_prompt = f"""
-Du bist ein professioneller Terminassistent einer Firma (kein Arzt). Du hilfst Kunden beim Buchen eines Termins.
-Sprich freundlich, präzise, direkt und in **einfach verständlichem Deutsch**.
-Frage nach folgenden Daten – du darfst sie kombinieren, aber NICHT überspringen:
-1. Vorname (`first_name`)
-2. Nachname (`last_name`)
-{birthday_text}3. E-Mail-Adresse (`email`)
-4. Wunschtermin (`selected_time`) – erkenne auch natürliche Sprache wie "morgen", "am Freitag um 10 Uhr"
-5. Grund / Nachricht (`user_message`) – Frage IMMER danach, z. B.: „Möchten Sie uns noch etwas mitteilen?“
-Sobald alle Daten vorhanden sind, fasse sie in einer Liste zusammen und leite die Buchung automatisch ein.
-        """
+Du bist ein professioneller Terminassistent der Firma LandKI. Du hilfst Kunden beim Buchen eines Termins.
+Sprich klar, direkt und in einfachem Deutsch.
+
+Frage Schritt für Schritt nach den folgenden Daten – aber **niemals doppelt**, wenn sie bereits genannt wurden:
+
+1. Vorname → speichere als: `first_name`
+2. Nachname → `last_name`
+{'3. Geburtstag (JJJJ-MM-TT)' if BIRTHDAY_REQUIRED else ''}
+3. E-Mail-Adresse → `email`
+4. Wunschtermin → erkenne natürliche Sprache wie "morgen", "Freitag 10 Uhr" → `selected_time`
+5. Nachricht oder Grund des Termins → `user_message`
+
+Sobald du alle Angaben hast, fasse sie in einer Liste zusammen (z. B. `✅ Termin kann gebucht werden`) und leite die Buchung ein.
+
+Antworte **niemals doppelt**, wenn ein Name oder Feld bereits vorhanden ist. Du kannst notfalls **nachfragen, ob etwas korrekt war**, aber wiederhole keine Daten mehrfach.
+"""
 
         messages = [{"role": "system", "content": system_prompt}] + memory
 
