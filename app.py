@@ -105,15 +105,17 @@ def chat():
 def book():
     data = request.get_json()
     access_token = session.get("access_token")
+
     if not access_token:
-        return jsonify({"error": "Nicht authentifiziert."}), 401
+        logging.warning("⚠️ Kein Access Token in Session – bitte zuerst authentifizieren über /calendar.")
+        return jsonify({"error": "Kein gültiges Outlook-Zugriffstoken. Bitte neu einloggen."}), 401
 
     try:
         start_time_utc = datetime.fromisoformat(data['selected_time'])
         start_local = start_time_utc.astimezone(TZ)
         end_local = start_local + timedelta(minutes=30)
 
-        # Outlook-Termin erstellen
+        # === Outlook-Kalendereintrag ===
         event = {
             "subject": f"Termin: {data['first_name']} {data['last_name']}",
             "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
@@ -123,36 +125,43 @@ def book():
             "attendees": []
         }
 
+        logging.info(f"🗓️ Versuche Outlook-Termin zu erstellen: {start_local} – {end_local}")
         resp = requests.post(
             'https://graph.microsoft.com/v1.0/me/events',
             headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
             json=event
         )
         if resp.status_code != 201:
-            logging.error(f"Outlook Fehler: {resp.text}")
-            return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
+            logging.error(f"❌ Outlook Fehler {resp.status_code}: {resp.text}")
+            return jsonify({"error": f"Fehler beim Kalender-Eintrag: {resp.status_code}"}), 500
 
-        # In SQL speichern
-        conn = pyodbc.connect(
-            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
-            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
-        )
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO dbo.appointments (
-                first_name, last_name, email,
-                appointment_start, appointment_end, created_at,
-                company_code, bot_origin, user_message
-            ) VALUES (?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?)
-        """, (
-            data['first_name'], data['last_name'], data['email'],
-            start_local, end_local, "LANDKI", "GPT-FC", data.get('user_message')
-        ))
-        conn.commit()
-        cur.close()
-        conn.close()
+        # === SQL-Eintrag ===
+        try:
+            logging.info("💾 Speichere Termin in SQL-Datenbank...")
+            conn = pyodbc.connect(
+                f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
+                f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
+            )
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO dbo.appointments (
+                    first_name, last_name, email,
+                    appointment_start, appointment_end, created_at,
+                    company_code, bot_origin, user_message
+                ) VALUES (?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?)
+            """, (
+                data['first_name'], data['last_name'], data['email'],
+                start_local, end_local, "LANDKI", "GPT-FC", data.get('user_message')
+            ))
+            conn.commit()
+            cur.close()
+            conn.close()
+            logging.info("✅ SQL-Eintrag erfolgreich.")
+        except Exception as sql_error:
+            logging.exception("❌ Fehler beim SQL-Eintrag")
+            return jsonify({"error": f"SQL-Fehler: {str(sql_error)}"}), 500
 
-        # E-Mail-Versand
+        # === E-Mail-Bestätigung ===
         subject = "Ihre Terminbestätigung"
         html = f"""
         <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
@@ -164,18 +173,30 @@ def book():
         """
 
         for rcp in [data['email'], SMTP_RECIPIENT]:
-            msg = MIMEMultipart()
-            msg['From'] = SMTP_SENDER
-            msg['To'] = rcp
-            msg['Subject'] = subject
-            msg.attach(MIMEText(html, 'html'))
-            with smtplib.SMTP('smtp.office365.com', 587) as s:
-                s.starttls()
-                s.login(SMTP_SENDER, os.getenv("SMTP_PASSWORD"))
-                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
+            try:
+                logging.info(f"📧 Sende E-Mail an {rcp}")
+                msg = MIMEMultipart()
+                msg['From'] = SMTP_SENDER
+                msg['To'] = rcp
+                msg['Subject'] = subject
+                msg.attach(MIMEText(html, 'html'))
+
+                smtp_pw = os.getenv("SMTP_PASSWORD")
+                if not smtp_pw:
+                    raise ValueError("SMTP_PASSWORD Umgebungsvariable fehlt.")
+
+                with smtplib.SMTP('smtp.office365.com', 587) as s:
+                    s.starttls()
+                    s.login(SMTP_SENDER, smtp_pw)
+                    s.sendmail(SMTP_SENDER, rcp, msg.as_string())
+                logging.info(f"✅ E-Mail an {rcp} gesendet.")
+            except Exception as email_error:
+                logging.exception(f"❌ Fehler beim Senden der E-Mail an {rcp}")
+                return jsonify({"error": f"E-Mail-Fehler: {str(email_error)}"}), 500
 
         return jsonify({"status": "success", "message": "Termin gebucht."})
 
     except Exception as e:
-        logging.exception("Fehler bei Terminbuchung")
-        return jsonify({"error": str(e)}), 500
+        logging.exception("❌ Allgemeiner Fehler bei Terminbuchung")
+        return jsonify({"error": f"Fehler bei der Buchung: {str(e)}"}), 500
+
