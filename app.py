@@ -39,6 +39,8 @@ conversation_memory = {}
 MAX_HISTORY = 20
 
 # === GPT Chat Endpoint ===
+# v1.0016 – Bugfix für \n im system_prompt (SyntaxError), klarere Promptstruktur
+
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -50,13 +52,15 @@ def chat():
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
+        # Dynamisch aufgebauter Prompt (ohne \n im f-string-Ausdruck!)
+        extra_birthday_line = "3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else ""
         system_prompt = (
             "Du bist ein professioneller, geduldiger Terminassistent. "
             "Sprich in einfachem, professionellem Deutsch.\n"
             "Erkenne auch mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
             "1. Vorname (`first_name`)\n"
             "2. Nachname (`last_name`)\n"
-            f"{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\\n' if BIRTHDAY_REQUIRED else ''}"
+            f"{extra_birthday_line}"
             "3. E-Mail-Adresse (`email`)\n"
             "4. Wunschtermin (`selected_time`) – erkenne z. B. „morgen“, „am Freitag um 10 Uhr“\n"
             "5. Grund / Nachricht (`user_message`) – z. B. „Ich brauche eine Website“\n"
@@ -86,6 +90,7 @@ def chat():
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 
 
