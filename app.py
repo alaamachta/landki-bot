@@ -39,8 +39,6 @@ conversation_memory = {}
 MAX_HISTORY = 20
 
 # === GPT Chat Endpoint ===
-# v1.0016 – Bugfix für \n im system_prompt (SyntaxError), klarere Promptstruktur
-
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -48,25 +46,25 @@ def chat():
         session_id = session.get("id") or str(uuid.uuid4())
         session["id"] = session_id
         memory = conversation_memory.setdefault(session_id, [])
-
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
-        # Dynamisch aufgebauter Prompt (ohne \n im f-string-Ausdruck!)
-        extra_birthday_line = "3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else ""
         system_prompt = (
             "Du bist ein professioneller, geduldiger Terminassistent. "
             "Sprich in einfachem, professionellem Deutsch.\n"
-            "Erkenne auch mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
+            "Erkenne mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
             "1. Vorname (`first_name`)\n"
             "2. Nachname (`last_name`)\n"
-            f"{extra_birthday_line}"
+            f"{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\\n' if BIRTHDAY_REQUIRED else ''}"
             "3. E-Mail-Adresse (`email`)\n"
-            "4. Wunschtermin (`selected_time`) – erkenne z. B. „morgen“, „am Freitag um 10 Uhr“\n"
-            "5. Grund / Nachricht (`user_message`) – z. B. „Ich brauche eine Website“\n"
-            "Wenn alle Felder erkannt sind, fasse sie knapp zusammen und starte automatisch die Buchung über `/book`.\n"
-            "Frage nur nach fehlenden Feldern – **niemals doppelt**.\n"
-            "Ignoriere irreführende Sätze wie „Ich schwöre Mashta“ – frage dann höflich nach dem echten Namen.\n"
+            "4. Wunschtermin (`selected_time`) – z. B. „morgen“, „am Freitag um 10 Uhr“\n"
+            "5. Grund / Nachricht (`user_message`)\n"
+            "Wenn alle Felder erkannt sind, fasse sie zusammen und sende JSON-Daten für die Buchung.\n"
+            "Format:\n"
+            "```json\n"
+            "{ \"first_name\": \"...\", \"last_name\": \"...\", \"email\": \"...\", \"selected_time\": \"...\", \"user_message\": \"...\" }\n"
+            "```\n"
+            "Wenn etwas fehlt, frage gezielt nach. Antworte klar, ohne doppelte Fragen."
         )
 
         messages = [{"role": "system", "content": system_prompt}] + memory
@@ -85,11 +83,31 @@ def chat():
 
         reply = response.choices[0].message.content
         memory.append({"role": "assistant", "content": reply})
+
+        # Versuch JSON aus Antwort zu extrahieren und automatisch /book aufzurufen
+        if "{" in reply and "}" in reply:
+            import json, re
+            try:
+                json_text = re.search(r"\{.*?\}", reply, re.DOTALL).group()
+                payload = json.loads(json_text)
+
+                # automatische Buchung starten
+                with app.test_client() as client:
+                    book_resp = client.post("/book", json=payload)
+                    if book_resp.status_code == 200:
+                        return jsonify({"response": reply + "\n\n✅ Termin wurde erfolgreich gebucht."})
+                    else:
+                        return jsonify({"response": reply + "\n\n⚠️ Fehler bei der Buchung.", "book_error": book_resp.get_json()})
+
+            except Exception as auto_error:
+                logging.warning(f"Keine gültige Buchungsdaten erkannt: {auto_error}")
+
         return jsonify({"response": reply})
 
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 
 
