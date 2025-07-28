@@ -22,23 +22,23 @@ logging.basicConfig(
 
 # === Konfiguration ===
 TZ = pytz.timezone("Europe/Berlin")
-SQL_SERVER = os.getenv("SQL_SERVER")
-SQL_DB = os.getenv("SQL_DATABASE")
-SQL_USER = os.getenv("SQL_USERNAME")
-SQL_PASSWORD = os.getenv("SQL_PASSWORD")
-SMTP_SENDER = os.getenv("EMAIL_SENDER")
+SQL_SERVER = os.environ.get("SQL_SERVER")
+SQL_DB = os.environ.get("SQL_DATABASE")
+SQL_USER = os.environ.get("SQL_USERNAME")
+SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+SMTP_SENDER = os.environ.get("EMAIL_SENDER")
 SMTP_RECIPIENT = "info@landki.com"
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEY")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
-OPENAI_API_VERSION = os.getenv("OPENAI_API_VERSION", "2024-10-21")
+AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
+AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
+OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 BIRTHDAY_REQUIRED = False
 
-# === Konversationsspeicher ===
+# === Konversationszustand ===
 conversation_memory = {}
 MAX_HISTORY = 20
 
-# === /chat Endpoint ===
+# === GPT Chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -46,27 +46,39 @@ def chat():
         session_id = session.get("id") or str(uuid.uuid4())
         session["id"] = session_id
         memory = conversation_memory.setdefault(session_id, [])
+
         memory.append({"role": "user", "content": user_input})
         memory[:] = memory[-MAX_HISTORY:]
 
-        birthday_field = "3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\n" if BIRTHDAY_REQUIRED else ""
         system_prompt = (
-            "Du bist ein professioneller Terminassistent. Sprich in einfachem, professionellem Deutsch.\n"
-            "Frage nur nach den **fehlenden Angaben** – vermeide Wiederholungen.\n"
-            "Benötigte Felder:\n"
+            "Du bist ein professioneller, geduldiger Terminassistent. "
+            "Sprich in einfachem, professionellem Deutsch.\n"
+            "Erkenne auch mehrere Angaben in einer Nachricht. Extrahiere folgende Felder:\n"
             "1. Vorname (`first_name`)\n"
             "2. Nachname (`last_name`)\n"
-            f"{birthday_field}"
+            f"{'3. Geburtstag (`birthday` – Format JJJJ-MM-TT)\\n' if BIRTHDAY_REQUIRED else ''}"
             "3. E-Mail-Adresse (`email`)\n"
-            "4. Wunschtermin (`selected_time`) – erkenne auch Wörter wie \"morgen\", \"am Freitag um 10 Uhr\"\n"
-            "5. Nachricht / Grund (`user_message`) – z. B.: „Möchten Sie uns noch etwas mitteilen?“\n"
-            "Wenn alle Felder erkannt wurden, fasse sie kompakt zusammen und leite automatisch die Buchung ein.\n"
-            "Wenn etwas unklar ist (z. B. „Ich schwöre Mashta“), antworte höflich und frage erneut konkret nach."
+            "4. Wunschtermin (`selected_time`) – erkenne z. B. „morgen“, „am Freitag um 10 Uhr“\n"
+            "5. Grund / Nachricht (`user_message`) – z. B. „Ich brauche eine Website“\n"
+            "Wenn alle Felder erkannt sind, fasse sie knapp zusammen und starte automatisch die Buchung über `/book`.\n"
+            "Frage nur nach fehlenden Feldern – **niemals doppelt**.\n"
+            "Ignoriere irreführende Sätze wie „Ich schwöre Mashta“ – frage dann höflich nach dem echten Namen.\n"
         )
 
         messages = [{"role": "system", "content": system_prompt}] + memory
-        client = AzureOpenAI(api_key=AZURE_OPENAI_KEY, api_version=OPENAI_API_VERSION, azure_endpoint=AZURE_OPENAI_ENDPOINT)
-        response = client.chat.completions.create(model=AZURE_OPENAI_DEPLOYMENT, messages=messages, temperature=0.3)
+
+        client = AzureOpenAI(
+            api_key=AZURE_OPENAI_KEY,
+            api_version=OPENAI_API_VERSION,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT
+        )
+
+        response = client.chat.completions.create(
+            model=AZURE_OPENAI_DEPLOYMENT,
+            messages=messages,
+            temperature=0.3
+        )
+
         reply = response.choices[0].message.content
         memory.append({"role": "assistant", "content": reply})
         return jsonify({"response": reply})
@@ -74,6 +86,7 @@ def chat():
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 
 # === /book Endpoint ===
