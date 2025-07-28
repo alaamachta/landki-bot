@@ -1,213 +1,176 @@
-# Version v1.0011 – Wiederhergestellt auf stabile GPT-/Search-/Mail-Struktur
+# app.py – LandKI-Terminassistent v1.0010 mit conversation_state und voller Buchung (Outlook + SQL + Mail)
 
-from flask import Flask, request, jsonify, redirect, session
-from flask_cors import CORS
+from flask import Flask, request, jsonify, session
+from openai import AzureOpenAI
 import os
 import logging
-import traceback
-import requests
-from colorlog import ColoredFormatter
-from openai import AzureOpenAI
-import markdown2
-import msal
+from flask_cors import CORS
 from datetime import datetime, timedelta
-import json
+import pytz
+import pyodbc
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import requests
+import dateparser
 
-# === Logging Setup ===
-formatter = ColoredFormatter(
-    "%(log_color)s[%(levelname)s]%(reset)s %(message)s",
-    log_colors={
-        'DEBUG': 'cyan',
-        'INFO': 'green',
-        'WARNING': 'yellow',
-        'ERROR': 'red',
-        'CRITICAL': 'bold_red',
-    }
-)
-handler = logging.StreamHandler()
-handler.setFormatter(formatter)
-logger = logging.getLogger()
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-# === Flask Setup ===
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
-app.secret_key = os.getenv("SECRET_KEY")
+CORS(app)
 
-# === Hilfsfunktion für sichere ENV-Nutzung ===
-def get_env_var(name, required=True):
-    value = os.getenv(name)
-    if not value and required:
-        logger.error(f"❌ ENV fehlt: {name}")
-        raise EnvironmentError(f"Missing environment variable: {name}")
-    return value
-
-# === ENV-Variablen ===
-AZURE_OPENAI_API_KEY     = get_env_var("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT    = get_env_var("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_DEPLOYMENT  = get_env_var("AZURE_OPENAI_DEPLOYMENT")
-AZURE_SEARCH_ENDPOINT    = get_env_var("AZURE_SEARCH_ENDPOINT")
-AZURE_SEARCH_KEY         = get_env_var("AZURE_SEARCH_KEY")
-AZURE_SEARCH_INDEX       = get_env_var("AZURE_SEARCH_INDEX")
-OPENAI_API_VERSION       = get_env_var("OPENAI_API_VERSION", required=False) or "2024-07-01-preview"
-
-MS_CLIENT_ID             = get_env_var("MS_CLIENT_ID")
-MS_CLIENT_SECRET         = get_env_var("MS_CLIENT_SECRET")
-MS_TENANT_ID             = get_env_var("MS_TENANT_ID")
-MS_REDIRECT_URI          = get_env_var("MS_REDIRECT_URI")
-MS_SCOPES                = ["Calendars.Read", "Calendars.ReadWrite", "Mail.Send"]
-MS_AUTHORITY             = f"https://login.microsoftonline.com/{MS_TENANT_ID}"
-
-# === OpenAI Client ===
-client = AzureOpenAI(
-    api_key=AZURE_OPENAI_API_KEY,
-    api_version=OPENAI_API_VERSION,
-    azure_endpoint=AZURE_OPENAI_ENDPOINT
+logging.basicConfig(
+    level=os.environ.get("WEBSITE_LOGGING_LEVEL", "INFO"),
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
 )
 
-# === Azure Search Funktion ===
-def search_azure(query):
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "api-key": AZURE_SEARCH_KEY,
-            "Accept": "application/json;odata.metadata=none"
-        }
-        url = f"{AZURE_SEARCH_ENDPOINT}/indexes/{AZURE_SEARCH_INDEX}/docs/search?api-version=2023-07-01-Preview"
-        body = {"search": query, "top": 5}
-        logger.info(f"🔍 Suche: {query}")
-        response = requests.post(url, headers=headers, json=body)
-        response.raise_for_status()
-        results = response.json()
-        contents = [doc['content'] for doc in results.get('value', []) if 'content' in doc]
-        return "\n---\n".join(contents)
-    except Exception:
-        logger.error("❌ Azure Search fehlgeschlagen:")
-        logger.error(traceback.format_exc())
-        return "Fehler bei der Azure-Suche."
+TZ = pytz.timezone("Europe/Berlin")
+SQL_SERVER = os.environ.get("SQL_SERVER")
+SQL_DB = os.environ.get("SQL_DATABASE")
+SQL_USER = os.environ.get("SQL_USERNAME")
+SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
+SMTP_SENDER = os.environ.get("EMAIL_SENDER")
+SMTP_RECIPIENT = "info@landki.com"
 
-# === MSAL Auth Helpers ===
-def _build_msal_app():
-    return msal.ConfidentialClientApplication(
-        MS_CLIENT_ID,
-        authority=MS_AUTHORITY,
-        client_credential=MS_CLIENT_SECRET
-    )
+BIRTHDAY_REQUIRED = False
 
-def _get_token_by_code(auth_code):
-    return _build_msal_app().acquire_token_by_authorization_code(
-        auth_code,
-        scopes=MS_SCOPES,
-        redirect_uri=MS_REDIRECT_URI
-    )
-
-# === Routen ===
-@app.route("/")
-def root():
-    return "✅ LandKI GPT-4o läuft!"
-
-@app.route("/env-debug")
-def env_debug():
-    return jsonify({
-        "AZURE_OPENAI_API_KEY": bool(os.getenv("AZURE_OPENAI_API_KEY")),
-        "AZURE_OPENAI_ENDPOINT": os.getenv("AZURE_OPENAI_ENDPOINT"),
-        "AZURE_OPENAI_DEPLOYMENT": os.getenv("AZURE_OPENAI_DEPLOYMENT"),
-        "OPENAI_API_VERSION": OPENAI_API_VERSION
-    })
+conversation_state = {}
 
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
-        user_input = request.json.get("message", "")
-        logger.info(f"👤 Frage: {user_input}")
-        context = search_azure(user_input)
-        prompt = f"Nutze diesen Kontext zur Beantwortung:\n{context}\n\nFrage: {user_input}\nAntwort:"
+        user_input = request.get_json()["message"]
 
-        response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
+        system_prompt = f"""
+Du bist ein professioneller Terminassistent einer Firma (kein Arzt). Du hilfst Kunden beim Buchen eines Termins.
+Sprich freundlich, präzise, direkt und in **einfach verständlichem Deutsch**.
+Frage nach folgenden Daten – du darfst sie kombinieren, aber NICHT überspringen:
+1. Vorname (`first_name`)
+2. Nachname (`last_name`)
+{'3. Geburtstag im Format JJJJ-MM-TT (`birthday`)\n' if BIRTHDAY_REQUIRED else ''}3. E-Mail-Adresse (`email`)
+4. Wunschtermin (`selected_time`) – erkenne auch natürliche Sprache wie "morgen", "am Freitag um 10 Uhr"
+5. Grund / Nachricht (`user_message`) – Frage IMMER danach.
+Wenn alle Daten vollständig sind, leite automatisch die Buchung ein – sende JSON an /book.
+"""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+
+        client = AzureOpenAI(
+            api_key=os.environ["AZURE_OPENAI_KEY"],
+            api_version=os.environ.get("OPENAI_API_VERSION", "2024-10-21"),
+            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"]
         )
 
-        answer = response.choices[0].message.content
-        logger.info(f"✅ GPT-Antwort: {answer[:100]}...")
-        return jsonify({
-            "response": answer,
-            "reply_html": markdown2.markdown(answer)
-        })
+        response = client.chat.completions.create(
+            model=os.environ["AZURE_OPENAI_DEPLOYMENT"],
+            messages=messages,
+            temperature=0.3
+        )
 
-    except Exception:
-        logger.error("❌ Fehler im Chat:")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler beim Chat"}), 500
+        return jsonify({"response": response.choices[0].message.content})
 
-@app.route("/calendar")
-def calendar_login():
-    session["state"] = os.urandom(24).hex()
-    auth_url = _build_msal_app().get_authorization_request_url(
-        scopes=MS_SCOPES,
-        state=session["state"],
-        redirect_uri=MS_REDIRECT_URI
-    )
-    return redirect(auth_url)
+    except Exception as e:
+        logging.exception("Fehler im /chat-Endpunkt")
+        return jsonify({"error": str(e)}), 500
 
-@app.route("/callback")
-def calendar_callback():
-    if request.args.get('state') != session.get('state'):
-        return "❌ Ungültiger State", 400
+@app.route("/book", methods=["POST"])
+def book():
+    data = request.get_json()
+    access_token = session.get("access_token")
+    if not access_token:
+        return jsonify({"error": "Nicht authentifiziert."}), 401
 
-    code = request.args.get('code')
-    token_result = _get_token_by_code(code)
-
-    if "access_token" not in token_result:
-        return jsonify({
-            "error": "Kein Token erhalten",
-            "details": token_result.get("error_description")
-        }), 500
-
-    session["access_token"] = token_result["access_token"]
-    return "✅ Kalenderzugriff gespeichert."
-
-@app.route("/send-mail", methods=["POST"])
-def send_mail():
     try:
-        token = session.get("access_token")
-        if not token:
-            return redirect("/calendar")
+        start_time_utc = datetime.fromisoformat(data['selected_time'])
+        start_local = start_time_utc.astimezone(TZ)
+        end_local = start_local + timedelta(minutes=30)
 
-        mail_data = request.json
-        to = mail_data.get("to")
-        subject = mail_data.get("subject")
-        body = mail_data.get("body")
+        logging.info(f"Starte Terminbuchung für {data['first_name']} {data['last_name']}")
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json"
+        outlook_body = f"Neuer Termin mit {data['first_name']} {data['last_name']}<br>E-Mail: {data['email']}"
+        if BIRTHDAY_REQUIRED:
+            outlook_body += f"<br>Geburtstag: {data['birthday']}"
+        if data.get('user_message'):
+            outlook_body += f"<br><br><strong>Nachricht:</strong><br>{data['user_message']}"
+
+        event = {
+            "subject": f"Termin: {data['first_name']} {data['last_name']}",
+            "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
+            "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
+            "body": {"contentType": "HTML", "content": outlook_body},
+            "location": {"displayName": "LandKI Kalender"},
+            "attendees": []
         }
-        payload = {
-            "message": {
-                "subject": subject,
-                "body": {
-                    "contentType": "Text",
-                    "content": body
-                },
-                "toRecipients": [
-                    {"emailAddress": {"address": to}}
-                ]
+
+        graph_resp = requests.post(
+            'https://graph.microsoft.com/v1.0/me/events',
+            headers={
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
             },
-            "saveToSentItems": "true"
-        }
+            json=event
+        )
+        if graph_resp.status_code != 201:
+            logging.error(f"Outlook Fehler: {graph_resp.text}")
+            return jsonify({"error": "Fehler beim Kalender-Eintrag."}), 500
+        logging.info("Outlook-Termin eingetragen")
 
-        response = requests.post("https://graph.microsoft.com/v1.0/me/sendMail", headers=headers, json=payload)
+        conn = pyodbc.connect(
+            f"DRIVER={{ODBC Driver 18 for SQL Server}};SERVER={SQL_SERVER};DATABASE={SQL_DB};"
+            f"UID={SQL_USER};PWD={SQL_PASSWORD};Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;")
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO dbo.appointments (
+                first_name, last_name, birthdate, phone, email, address,
+                appointment_start, appointment_end, created_at,
+                company_code, bot_origin, service_type, note_internal, user_message
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, SYSDATETIMEOFFSET(), ?, ?, ?, ?, ?)
+        """, (
+            data['first_name'],
+            data['last_name'],
+            data.get('birthday') if BIRTHDAY_REQUIRED else None,
+            data.get('phone'),
+            data['email'],
+            data.get('address'),
+            start_local,
+            end_local,
+            "LANDKI", "GPT-ASSIST", "Standard", "Termin gebucht via Bot",
+            data.get('user_message')
+        ))
+        conn.commit()
+        cur.close()
+        conn.close()
+        logging.info("SQL-Termin gespeichert")
 
-        if response.status_code == 202:
-            return jsonify({"status": "success", "message": "E-Mail gesendet."})
-        else:
-            logger.error(f"❌ Fehler beim E-Mail-Versand: {response.text}")
-            return jsonify({"status": "error", "details": response.text}), 500
+        subject = "Ihre Terminbestätigung"
+        html = f"""
+        <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
+        <p>Ihr Termin ist gebucht:</p>
+        <ul>
+            <li><strong>Datum:</strong> {start_local.strftime('%d.%m.%Y')}</li>
+            <li><strong>Uhrzeit:</strong> {start_local.strftime('%H:%M')} Uhr</li>
+        </ul>
+        {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
+        <p>Dies ist eine automatische Terminbestätigung.<br>Ihre Daten wurden gemäß DSGVO verarbeitet.</p>
+        <p>Mit freundlichen Grüßen<br>Ihr Team</p>
+        """
 
-    except Exception:
-        logger.error("💥 E-Mail-Versand fehlgeschlagen:")
-        logger.error(traceback.format_exc())
-        return jsonify({"error": "Fehler beim Senden"}), 500
+        for rcp in [data['email'], SMTP_RECIPIENT]:
+            msg = MIMEMultipart()
+            msg['From'] = SMTP_SENDER
+            msg['To'] = rcp
+            msg['Subject'] = subject
+            msg.attach(MIMEText(html, 'html'))
+            with smtplib.SMTP('smtp.office365.com', 587) as s:
+                s.starttls()
+                s.login(SMTP_SENDER, os.environ.get("SMTP_PASSWORD"))
+                s.sendmail(SMTP_SENDER, rcp, msg.as_string())
+        logging.info("Bestätigungs-Mails versendet")
+
+        return jsonify({"status": "success", "message": "Termin gebucht."})
+
+    except Exception as e:
+        logging.exception("Fehler bei Terminbuchung")
+        return jsonify({"error": str(e)}), 500
