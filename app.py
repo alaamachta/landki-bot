@@ -11,7 +11,7 @@ from msal import ConfidentialClientApplication
 
 # === Flask Setup ===
 app = Flask(__name__)
-CORS(app)
+CORS(app, supports_credentials=True, origins=["https://it-land.net"])
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
 # === Logging Setup ===
