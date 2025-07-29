@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0026 – OAuth2 Silent Refresh, stabilisiert
+# app.py – LandKI-Terminassistent v1.0027 – OAuth2 + Silent Refresh stabilisiert
 
 import os
 import uuid
@@ -19,14 +19,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from msal import ConfidentialClientApplication, SerializableTokenCache
 
-# === Flask Setup ===
 app = Flask(__name__)
 CORS(app, origins=["https://it-land.net"], supports_credentials=True)
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
-# === Logging Setup ===
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
     level=logging.INFO,
@@ -35,7 +33,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === Konfiguration ===
 SQL_SERVER = os.environ.get("SQL_SERVER")
 SQL_DB = os.environ.get("SQL_DATABASE")
 SQL_USER = os.environ.get("SQL_USERNAME")
@@ -49,7 +46,6 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 
-# === MSAL Konfiguration ===
 CLIENT_ID = os.environ.get("MS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MS_TENANT_ID")
@@ -89,7 +85,7 @@ def authorized():
         session["token_expires"] = time.time() + result["expires_in"]
         session["token_cache"] = token_cache.serialize()
         logging.info("✅ Zugriffstoken erfolgreich gespeichert.")
-        return "✅ Outlook-Login erfolgreich. Du kannst nun zurück zum Chat."
+        return redirect("https://it-land.net")
     else:
         logging.error("❌ Fehler beim Login: " + json.dumps(result, indent=2))
         return "❌ Fehler beim Abrufen des Tokens. Siehe Log.", 500
