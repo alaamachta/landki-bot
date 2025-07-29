@@ -63,37 +63,35 @@ def calendar():
     msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
     state = str(uuid.uuid4())
     session["state"] = state
-    auth_url = msal_app.get_authorization_request_url(SCOPES, state=state, redirect_uri=REDIRECT_URI)
+    auth_url = msal_app.get_authorization_request_url(
+        scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],  # explizit, damit nichts fehlt
+        state=state,
+        redirect_uri=REDIRECT_URI
+    )
     logging.info("🔐 Weiterleitung zu Microsoft Login: " + auth_url)
     return redirect(auth_url)
+
 
 @app.route("/callback")
 def authorized():
     if request.args.get("state") != session.get("state"):
-        return "⚠️ Sitzung abgelaufen oder ungültig. Bitte neu starten.", 400
+        return redirect(url_for("index"))
 
-    code = request.args.get("code")
-    if not code:
-        return "⚠️ Kein Autorisierungscode erhalten.", 400
+    msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
 
-    token_cache = SerializableTokenCache()
-    msal_app = ConfidentialClientApplication(
-        CLIENT_ID,
-        authority=AUTHORITY,
-        client_credential=CLIENT_SECRET,
-        token_cache=token_cache
+    result = msal_app.acquire_token_by_authorization_code(
+        request.args["code"],
+        scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],
+        redirect_uri=REDIRECT_URI
     )
-    result = msal_app.acquire_token_by_authorization_code(code, scopes=SCOPES, redirect_uri=REDIRECT_URI)
 
     if "access_token" in result:
-        session["access_token"] = result["access_token"]
-        session["token_expires"] = time.time() + result["expires_in"]
-        session["token_cache"] = token_cache.serialize()
-        logging.info("✅ Zugriffstoken erfolgreich gespeichert.")
-        return redirect("https://it-land.net")
+        session["token"] = result["access_token"]
+        return redirect("/token-debug")
     else:
-        logging.error("❌ Fehler beim Login: " + json.dumps(result, indent=2))
-        return "❌ Fehler beim Abrufen des Tokens. Siehe Log.", 500
+        logging.error("❌ Fehler beim Token-Abruf: %s", result)
+        return "Fehler beim Abrufen des Tokens. Siehe Log."
+
 
 @app.route("/chat", methods=["POST"])
 def chat():
