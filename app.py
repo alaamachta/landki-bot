@@ -319,3 +319,6 @@ def token_debug():
     """
     return html
 
+@app.route("/")
+def index():
+    return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
