@@ -288,7 +288,7 @@ def token_debug():
     if not token:
         return "Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
 
-    access_token = token.get("access_token")
+    access_token = token
     if not access_token:
         return "Access Token fehlt im gespeicherten Token."
 
