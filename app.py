@@ -14,6 +14,7 @@ import sys
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
+from flask_session import Session
 from openai import AzureOpenAI
 from datetime import datetime, timedelta
 from email.mime.text import MIMEText
@@ -25,6 +26,10 @@ CORS(app, origins=["https://it-land.net"], supports_credentials=True)
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
+
+# Session-Konfiguration (serverseitig)
+app.config["SESSION_TYPE"] = "filesystem"
+Session(app)
 
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
