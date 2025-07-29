@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0027 – OAuth2 + Silent Refresh stabilisiert
+# app.py – LandKI-Terminassistent v1.0028 – OAuth2 mit robuster Fehlerbehandlung und Token-Refresh
 
 import os
 import uuid
@@ -138,12 +138,13 @@ def chat():
                     args = json.loads(tool_call.function.arguments)
                     with app.test_client() as client:
                         with client.session_transaction() as sess:
-                            sess["access_token"] = session.get("access_token")
-                            sess["token_cache"] = session.get("token_cache")
+                            sess.update(session)
                         book_resp = client.post("/book", json=args)
                         result = book_resp.get_json()
                         if book_resp.status_code == 200:
                             return jsonify({"response": "✅ Termin erfolgreich gebucht."})
+                        elif book_resp.status_code == 401:
+                            return jsonify({"response": "⚠️ Bitte melde dich neu an unter /calendar – der Zugriffstoken ist abgelaufen."})
                         else:
                             return jsonify({"response": f"⚠️ Fehler: {result.get('error', 'Unbekannt')}"})
 
