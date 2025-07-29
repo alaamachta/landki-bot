@@ -29,11 +29,13 @@ app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
 # Session-Konfiguration (serverseitig)
 app.config["SESSION_TYPE"] = "filesystem"
+app.config["SESSION_FILE_DIR"] = "/tmp/flask_session"  # sicheres temp-Verzeichnis für Azure
+
 Session(app)
 
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # vorher war INFO – nun volle Debug-Ausgabe
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     handlers=[
@@ -41,7 +43,8 @@ logging.basicConfig(
         logging.StreamHandler(sys.stderr)
     ]
 )
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("landki")
+
 
 SQL_SERVER = os.environ.get("SQL_SERVER")
 SQL_DB = os.environ.get("SQL_DATABASE")
@@ -319,6 +322,12 @@ def token_debug():
     """
     return html
 
+
+
 @app.route("/")
 def index():
     return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
+
+if __name__ == "__main__":
+    app.run(debug=True)  # nur lokal sinnvoll – Azure nutzt Gunicorn
+
