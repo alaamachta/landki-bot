@@ -56,7 +56,7 @@ CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MS_TENANT_ID")
 REDIRECT_URI = os.environ.get("MS_REDIRECT_URI") or "https://landki-bot-app-hrbtfefhgvasc5gk.germanywestcentral-01.azurewebsites.net/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite", "https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Mail.Send"]
+SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite", "https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Mail.Send", "https://outlook.office365.com/SMTP.Send"]
 
 @app.route("/calendar")
 def calendar():
@@ -279,3 +279,37 @@ def book():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
+
+
+
+
+# === Token-Debug ===
+@app.route("/token-debug")
+def token_debug():
+    token = session.get("token")  # Holt gespeicherten Token aus Session
+    if not token:
+        return "Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
+
+    access_token = token.get("access_token")
+    if not access_token:
+        return "Access Token fehlt im gespeicherten Token."
+
+    # Optional: JWT-Analyse vorbereiten (unsigniert)
+    import jwt
+    try:
+        decoded = jwt.decode(access_token, options={"verify_signature": False})
+    except Exception as e:
+        return f"Fehler beim Decodieren: {e}"
+
+    # Klartext-Ausgabe
+    scopes = decoded.get("scp", "Keine Scope-Angabe im Token")
+    html = f"""
+        <h3>Access Token:</h3>
+        <textarea rows='6' cols='100'>{access_token}</textarea>
+        <h3>Scopes im Token (scp):</h3>
+        <pre>{scopes}</pre>
+        <h3>Kompletter JWT Payload (decoded):</h3>
+        <pre>{decoded}</pre>
+    """
+    return html
+
