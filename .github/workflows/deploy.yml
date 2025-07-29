@@ -1,5 +1,5 @@
 # .github/workflows/deploy.yml
-# 🚀 Empfohlenes Deployment für Azure Web App (mit Oryx Build)
+# ✅ Oryx Auto-Build – korrektes Python-Environment + Requirements + Restart
 
 name: Deploy LandKI Bot
 
@@ -13,20 +13,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 📦 Checkout Code
+      - name: 📦 Code auschecken
         uses: actions/checkout@v3
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: 🔐 Azure Login
+      - name: 🔐 Azure Login mit GitHub Secret
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: 🚀 Deploy with Oryx Build (no ZIP)
+      - name: 🚀 Deploy mit Oryx-Autobuild (kein ZIP nötig)
         uses: azure/webapps-deploy@v3
         with:
           app-name: landki-bot-app
