@@ -1,10 +1,10 @@
-# app.py – LandKI-Terminassistent v1.0024 – Outlook Session Debug integriert
+# app.py – LandKI-Terminassistent v1.0025 – bereinigt
 
 from flask import Flask, request, jsonify, session, redirect, url_for
+from flask_cors import CORS
 from openai import AzureOpenAI
 import os, logging, uuid, requests, pytz, pyodbc, smtplib, json
 from datetime import datetime, timedelta
-from flask_cors import CORS
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from msal import ConfidentialClientApplication
@@ -146,6 +146,8 @@ def chat():
                 if tool_call.function.name == "book_appointment":
                     args = json.loads(tool_call.function.arguments)
                     with app.test_client() as client:
+                        with client.session_transaction() as sess:
+                            sess["access_token"] = session.get("access_token")
                         book_resp = client.post("/book", json=args)
                         result = book_resp.get_json()
                         if book_resp.status_code == 200:
@@ -159,8 +161,7 @@ def chat():
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
 
-
-# === /book Endpoint ===
+# === Terminbuchung ===
 @app.route("/book", methods=["POST"])
 def book():
     data = request.get_json()
