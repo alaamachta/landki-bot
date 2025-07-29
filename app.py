@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0023 – mit Outlook-Login (MSAL), GPT, SQL, Mail
+# app.py – LandKI-Terminassistent v1.0024 – Outlook Session Debug integriert
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from openai import AzureOpenAI
@@ -11,8 +11,16 @@ from msal import ConfidentialClientApplication
 
 # === Flask Setup ===
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=["https://it-land.net"])
+CORS(app,
+     origins=["https://it-land.net"],
+     supports_credentials=True)
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
+
+# 🔒 Session-Cookie für Cross-Origin
+app.config.update({
+    "SESSION_COOKIE_SAMESITE": "None",
+    "SESSION_COOKIE_SECURE": True
+})
 
 # === Logging Setup ===
 logging.basicConfig(
@@ -92,6 +100,8 @@ def chat():
         session_id = session.get("id") or str(uuid.uuid4())
         session["id"] = session_id
 
+        logging.info(f"📦 Aktuelle Session-Daten im Chat: {dict(session)}")
+
         client = AzureOpenAI(
             api_key=AZURE_OPENAI_KEY,
             api_version=OPENAI_API_VERSION,
@@ -148,6 +158,7 @@ def chat():
     except Exception as e:
         logging.exception("Fehler im /chat-Endpunkt")
         return jsonify({"error": str(e)}), 500
+
 
 # === /book Endpoint ===
 @app.route("/book", methods=["POST"])
