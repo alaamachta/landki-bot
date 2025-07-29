@@ -86,8 +86,11 @@ def authorized():
     )
 
     if "access_token" in result:
-        session["token"] = result["access_token"]
+        session["access_token"] = result["access_token"]               # für Outlook + E-Mail
+        session["token_expires"] = time.time() + result["expires_in"]  # Ablaufzeit merken
+        session["token_cache"] = msal_app.token_cache.serialize()      # Cache für später
         return redirect("/token-debug")
+
     else:
         logging.error("❌ Fehler beim Token-Abruf: %s", result)
         return "Fehler beim Abrufen des Tokens. Siehe Log."
@@ -284,7 +287,7 @@ def health():
 # === Token-Debug ===
 @app.route("/token-debug")
 def token_debug():
-    token = session.get("token")  # Holt gespeicherten Token aus Session
+    token = session.get("access_token")  # Holt gespeicherten Token aus Session
     if not token:
         return "Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
 
