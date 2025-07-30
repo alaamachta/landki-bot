@@ -1,55 +1,36 @@
-# deploy.yml
-# ✨ Alternative ohne Kudu-Bereinigung: Einfacher Zip-Deploy via Azure CLI
-# .github/workflows/deploy.yml – Oryx Build für Azure App Service (Linux, Python)
-# ✔ Automatische Installation der requirements.txt in Azure
-# ✔ Kein ZIP oder manuelles pip install nötig
-
-name: Deploy LandKI Bot
-name: 🚀 Deploy LandKI Bot via Oryx
+name: Deploy Flask App to Azure Web App
 
 on:
-push:
-branches:
-- main
+  push:
+    branches:
+      - main
 
 jobs:
   build-and-deploy:
-  deploy:
-runs-on: ubuntu-latest
+    runs-on: ubuntu-latest
 
-steps:
-      - name: Checkout code
-      - name: ⏬ Checkout Repository
-uses: actions/checkout@v3
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Archive code
-        run: |
-          zip -r release.zip . -x "*.git*"
+    - name: Azure Login
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Azure Login (via AZURE_CREDENTIALS)
-      - name: 🔐 Azure Login
-uses: azure/login@v1
-with:
-creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Deploy using ZipDeploy
-      - name: 🚀 Deploy to Azure Web App (Oryx)
-uses: azure/webapps-deploy@v3
-with:
-app-name: landki-bot-app
-          package: release.zip
-
-      - name: ✅ Done
-        run: echo "Deployment finished without Kudu API"
-          slot-name: Production
-          package: .   # GANZ WICHTIG: Kein ZIP!
+    - name: Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: landki-bot-app
+        slot-name: production
+        package: .
