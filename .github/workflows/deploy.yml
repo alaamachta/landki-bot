@@ -34,3 +34,5 @@ jobs:
         app-name: landki-bot-app
         slot-name: production
         package: .
+        clean: true
+        enable-oryx-build: false
