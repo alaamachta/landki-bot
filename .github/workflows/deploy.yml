@@ -33,6 +33,6 @@ jobs:
       with:
         app-name: landki-bot-app
         slot-name: production
-        package: .
+        package: './'
         clean: true
         enable-oryx-build: false
