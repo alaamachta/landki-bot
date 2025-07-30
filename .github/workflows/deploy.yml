@@ -23,8 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Archive project files
-        run: zip -r app.zip . -x ".git/*"
+      - name: Archive code files
+        run: zip -r app.zip . -x "*.git*"
 
       - name: Azure Login
         uses: azure/login@v1
@@ -34,5 +34,5 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: landki-bot-app
+          app-name: landki-bot-app  # 🔁 Ersetze durch deinen Azure App-Namen
           package: app.zip
