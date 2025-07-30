@@ -219,7 +219,11 @@ def book():
         )
         if resp.status_code != 201:
             logging.error(f"❌ Outlook Fehler {resp.status_code}: {resp.text}")
-            return jsonify({"error": f"Fehler beim Kalender-Eintrag: {resp.status_code}"}), 500
+            return jsonify({
+                "error": f"Fehler beim Kalender-Eintrag: {resp.status_code}",
+                "details": resp.text
+            }), 500
+
 
         try:
             logging.info("💾 Speichere Termin in SQL-Datenbank...")
