@@ -1,41 +1,33 @@
-name: Build and Deploy to Azure Web App
+name: Deploy Python Bot to Azure
 
 on:
   push:
     branches:
-      - main
+      - main  # oder dein Branch
 
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install dependencies
+      - name: 📦 Install Dependencies
         run: |
-          python -m pip install --upgrade pip
+          python -m venv antenv
+          source antenv/bin/activate
           pip install -r requirements.txt
 
-      - name: Archive code files
-        run: |
-          ls -la  # Debug-Check – zeigt, ob requirements.txt da ist
-          zip -r app.zip . -x "*.git*" -x "*.github*"
-
-
-      - name: Azure Login
-        uses: azure/login@v1
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Deploy to Azure Web App
+      - name: 🚀 Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: landki-bot-app  # 🔁 Ersetze durch deinen Azure App-Namen
-          package: app.zip
+          app-name: landki-bot-app  # 🔁 DEIN NAME
+          slot-name: Production
+          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          package: .  # KEINE ZIP! GANZES VERZEICHNIS
