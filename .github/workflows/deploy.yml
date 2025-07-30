@@ -18,7 +18,7 @@ jobs:
       with:
         python-version: '3.11'
 
-    - name: Install Dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
@@ -28,11 +28,18 @@ jobs:
       with:
         creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-    - name: Deploy to Azure Web App
+    - name: Delete old wwwroot files via Kudu API
+      run: |
+        curl -X DELETE -u "$DEPLOY_USER:$DEPLOY_PASSWORD" "https://$APP_NAME.scm.azurewebsites.net/api/vfs/site/wwwroot/"
+      env:
+        DEPLOY_USER: ${{ secrets.AZURE_DEPLOY_USER }}
+        DEPLOY_PASSWORD: ${{ secrets.AZURE_DEPLOY_PASSWORD }}
+        APP_NAME: landki-bot-app
+
+    - name: Deploy app.py + requirements.txt + runtime.txt
       uses: azure/webapps-deploy@v2
       with:
         app-name: landki-bot-app
-        slot-name: production
-        package: './'
+        package: .
         clean: true
         enable-oryx-build: false
