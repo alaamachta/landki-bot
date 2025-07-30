@@ -14,7 +14,7 @@ AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-2
 
 # === Flask App Setup ===
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins="*", supports_credentials=True)
 
 # === Logging Setup ===
 logging.basicConfig(level=logging.INFO)
