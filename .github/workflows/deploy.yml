@@ -1,33 +1,55 @@
-name: Deploy Python Bot to Azure
+# deploy.yml
+# ✨ Alternative ohne Kudu-Bereinigung: Einfacher Zip-Deploy via Azure CLI
+# .github/workflows/deploy.yml – Oryx Build für Azure App Service (Linux, Python)
+# ✔ Automatische Installation der requirements.txt in Azure
+# ✔ Kein ZIP oder manuelles pip install nötig
+
+name: Deploy LandKI Bot
+name: 🚀 Deploy LandKI Bot via Oryx
 
 on:
-  push:
-    branches:
-      - main  # oder dein Branch
+push:
+branches:
+- main
 
 jobs:
   build-and-deploy:
-    runs-on: ubuntu-latest
+  deploy:
+runs-on: ubuntu-latest
 
-    steps:
-      - name: 📥 Checkout Code
-        uses: actions/checkout@v3
+steps:
+      - name: Checkout code
+      - name: ⏬ Checkout Repository
+uses: actions/checkout@v3
 
-      - name: 🐍 Set up Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: '3.11'
 
-      - name: 📦 Install Dependencies
+      - name: Install dependencies
         run: |
-          python -m venv antenv
-          source antenv/bin/activate
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: 🚀 Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: landki-bot-app  # 🔁 DEIN NAME
+      - name: Archive code
+        run: |
+          zip -r release.zip . -x "*.git*"
+
+      - name: Azure Login (via AZURE_CREDENTIALS)
+      - name: 🔐 Azure Login
+uses: azure/login@v1
+with:
+creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Deploy using ZipDeploy
+      - name: 🚀 Deploy to Azure Web App (Oryx)
+uses: azure/webapps-deploy@v3
+with:
+app-name: landki-bot-app
+          package: release.zip
+
+      - name: ✅ Done
+        run: echo "Deployment finished without Kudu API"
           slot-name: Production
-          publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: .  # KEINE ZIP! GANZES VERZEICHNIS
+          package: .   # GANZ WICHTIG: Kein ZIP!
