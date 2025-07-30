@@ -68,20 +68,30 @@ SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite", "https://graph.micr
 
 @app.route("/calendar")
 def calendar():
-    logging.info("🎯 CLIENT_ID: " + str(CLIENT_ID))
-    logging.info("🎯 CLIENT_SECRET vorhanden: " + str(bool(CLIENT_SECRET)))
-    logging.info("🎯 REDIRECT_URI: " + str(REDIRECT_URI))
+    try:
+        logging.info("🎯 CLIENT_ID: " + str(CLIENT_ID))
+        logging.info("🎯 CLIENT_SECRET vorhanden: " + str(bool(CLIENT_SECRET)))
+        logging.info("🎯 REDIRECT_URI: " + str(REDIRECT_URI))
 
-    msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
-    state = str(uuid.uuid4())
-    session["state"] = state
-    auth_url = msal_app.get_authorization_request_url(
-        scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],  # explizit, damit nichts fehlt
-        state=state,
-        redirect_uri=REDIRECT_URI
-    )
-    logging.info("🔐 Weiterleitung zu Microsoft Login: " + auth_url)
-    return redirect(auth_url)
+        msal_app = ConfidentialClientApplication(
+            CLIENT_ID,
+            authority=AUTHORITY,
+            client_credential=CLIENT_SECRET
+        )
+        state = str(uuid.uuid4())
+        session["state"] = state
+        auth_url = msal_app.get_authorization_request_url(
+            scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],
+            state=state,
+            redirect_uri=REDIRECT_URI
+        )
+        logging.info("🔐 Weiterleitung zu Microsoft Login: " + auth_url)
+        return redirect(auth_url)
+
+    except Exception as e:
+        logging.exception("❌ Fehler in /calendar")
+        return f"<pre>Fehler in /calendar: {str(e)}</pre>", 500
+
 
 
 @app.route("/callback")
