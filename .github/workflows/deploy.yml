@@ -32,11 +32,10 @@ jobs:
       env:
         DEPLOY_USER: ${{ secrets.AZURE_DEPLOY_USER }}
         DEPLOY_PASSWORD: ${{ secrets.AZURE_DEPLOY_PASSWORD }}
-        APP_NAME: landki-bot-app
       run: |
         echo "Deleting old wwwroot content via Kudu API..."
         curl -X DELETE -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
-        "https://${APP_NAME}.scm.azurewebsites.net/api/vfs/site/wwwroot/"
+        "https://landki-bot-app-hrbtfefhgvasc5gk.scm.germanywestcentral-01.azurewebsites.net/api/vfs/site/wwwroot/"
 
     - name: Deploy app.py + requirements.txt + runtime.txt
       uses: azure/webapps-deploy@v2
