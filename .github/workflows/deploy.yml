@@ -16,12 +16,12 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Upload files via FTP
+    - name: Upload files via FTPS
       run: |
         echo "Hochladen von app.py, requirements.txt, runtime.txt..."
-        curl -T app.py --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftp://${{ secrets.FTP_SERVER }}/site/wwwroot/app.py"
-        curl -T requirements.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftp://${{ secrets.FTP_SERVER }}/site/wwwroot/requirements.txt"
-        curl -T runtime.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftp://${{ secrets.FTP_SERVER }}/site/wwwroot/runtime.txt"
+        curl -T app.py --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/app.py"
+        curl -T requirements.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/requirements.txt"
+        curl -T runtime.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/runtime.txt"
 
     - name: pip install auf Kudu ausführen
       run: |
