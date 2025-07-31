@@ -12,6 +12,7 @@ import base64
 import time
 import sys
 import redis
+import socket
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
@@ -30,18 +31,21 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
 # 🔁 Redis Session-Konfiguration
-app.config["SESSION_TYPE"] = "redis"
-app.config["SESSION_REDIS"] = redis.Redis(
-    host=os.getenv("REDIS_HOST"),
-    port=int(os.getenv("REDIS_PORT", "6380")),
-    password=os.getenv("REDIS_PASSWORD"),
-    ssl=True
-)
-try:
-    app.config["SESSION_REDIS"].ping()
-    logging.info("✅ Redis-Verbindung erfolgreich.")
-except Exception as e:
-    logging.error("❌ Redis-Fehler: %s", str(e))
+#app.config["SESSION_TYPE"] = "redis"
+#app.config["SESSION_REDIS"] = redis.Redis(
+#    host=os.getenv("REDIS_HOST"),
+#    port=int(os.getenv("REDIS_PORT", "6380")),
+#    password=os.getenv("REDIS_PASSWORD"),
+#    ssl=True
+#)
+#try:
+#    app.config["SESSION_REDIS"].ping()
+#    logging.info("✅ Redis-Verbindung erfolgreich.")
+#except Exception as e:
+#    logging.error("❌ Redis-Fehler: %s", str(e))
+app.config["SESSION_TYPE"] = "filesystem"
+
+
 
 Session(app)
 
