@@ -221,8 +221,13 @@ def book():
                 else:
                     logging.warning("⚠️ Token für SMTP abgelaufen.")
                     return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
-    
-        access_token = session["access_token"]
+
+        
+        access_token = session.get("access_token")
+        if not access_token:
+            logging.error("Access token fehlt in session.")
+            return jsonify({"error": "Kein Access Token gefunden. Bitte neu einloggen."}), 401
+
 
         TZ = pytz.timezone("Europe/Berlin")
         start_time_utc = datetime.fromisoformat(data['selected_time'])
@@ -361,4 +366,11 @@ def index():
 
 if __name__ == "__main__":
     app.run(debug=True)  # nur lokal sinnvoll – Azure nutzt Gunicorn
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    logging.exception("Unerwarteter Fehler: %s", e)
+    return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
+
 
