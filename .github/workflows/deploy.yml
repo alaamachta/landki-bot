@@ -34,7 +34,7 @@ jobs:
         DEPLOY_PASSWORD: ${{ secrets.AZURE_DEPLOY_PASSWORD }}
       run: |
         curl -X DELETE -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
-        "https://landki-bot-app-hrbtfefhgvasc5gk.scm.azurewebsites.net/api/vfs/site/wwwroot/"
+        "https://landki-bot-app.scm.azurewebsites.net/api/vfs/site/wwwroot/"
 
     - name: Create zip package manually
       run: |
