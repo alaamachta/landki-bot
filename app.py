@@ -11,6 +11,7 @@ import pyodbc
 import base64
 import time
 import sys
+import redis
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
@@ -28,9 +29,20 @@ app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
-# Session-Konfiguration (serverseitig)
-app.config["SESSION_TYPE"] = "filesystem"
-app.config["SESSION_FILE_DIR"] = "/tmp/flask_session"  # sicheres temp-Verzeichnis für Azure
+# 🔁 Redis Session-Konfiguration
+app.config["SESSION_TYPE"] = "redis"
+app.config["SESSION_REDIS"] = redis.Redis(
+    host=os.getenv("REDIS_HOST"),
+    port=int(os.getenv("REDIS_PORT", "6380")),
+    password=os.getenv("REDIS_PASSWORD"),
+    ssl=True
+)
+try:
+    app.config["SESSION_REDIS"].ping()
+    logging.info("✅ Redis-Verbindung erfolgreich.")
+except Exception as e:
+    logging.error("❌ Redis-Fehler: %s", str(e))
+
 Session(app)
 
 # Logging und Zeitzone
@@ -125,7 +137,12 @@ def calendar():
 
 @app.route("/callback")
 def authorized():
+    if "state" not in session:
+        logging.warning("⚠️ Kein session['state'] – wahrscheinlich Session abgelaufen oder Deploymentneustart")
+        return "⚠️ Sitzung abgelaufen. Bitte erneut über /calendar anmelden."
+
     if request.args.get("state") != session.get("state"):
+        logging.warning("⚠️ Ungültiger State-Wert im Callback")
         return redirect(url_for("index"))
 
     msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
