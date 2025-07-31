@@ -1,25 +1,32 @@
+# === Flask & Server ===
 flask>=2.2.0
 flask-cors>=3.0.10
 Flask-Session
-redis>=5.0.0
 gunicorn>=20.1.0
-pyjwt>=2.8.0
 
+# === Microsoft Auth ===
+msal>=1.24.0               # Microsoft Authentifizierung (OAuth2)
+pyjwt>=2.8.0               # Für Token-Debugging (JWT Decoding)
 
+# === OpenAI (Azure) ===
 openai>=1.30.1             # AzureOpenAI-SDK
-requests>=2.31.0
-httpx>=0.24.1              # für eventuelle GPT-Kompatibilität
+requests>=2.31.0           # HTTP-Anfragen für Graph API & SMTP
+httpx>=0.24.1              # Optional für GPT-Funktionalität
 
-markdown2>=2.4.12
-colorlog>=6.7.0            # farbige Logs im Terminal
-
-msal>=1.24.0               # Microsoft Authentifizierung
-pyodbc>=5.1.0              # SQL-Zugriff
-pytz==2024.1               # Zeitzonen (z. B. Europe/Berlin)
+# === SQL & Zeit ===
+pyodbc>=5.1.0              # SQL-Zugriff (ODBC)
+pytz==2024.1               # Zeitzonen (Europe/Berlin)
 python-dateutil>=2.8.2     # ISO-Zeitumwandlung etc.
-dateparser
+dateparser                 # Optional für natürliche Zeitangaben
 
-# Optional für Azure Monitoring (falls du das aktivierst)
+# === Logs & Markdown ===
+markdown2>=2.4.12          # Markdown2HTML (optional für Mail etc.)
+colorlog>=6.7.0            # Farbige Logs im Terminal
+
+# === Redis (optional) ===
+redis>=5.0.0               # Session-Fallback Redis (aktuell deaktiviert)
+
+# === Azure Monitoring (optional) ===
 opencensus-ext-azure
 opencensus-ext-logging
 opencensus-ext-flask
