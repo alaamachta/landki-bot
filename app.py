@@ -110,10 +110,11 @@ def calendar():
         session["state"] = state
 
         auth_url = msal_app.get_authorization_request_url(
-            scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],
+            scopes=SCOPES,
             state=state,
             redirect_uri=REDIRECT_URI
         )
+
         logging.info("🔐 Weiterleitung zu Microsoft Login: %s", auth_url)
         return redirect(auth_url)
 
