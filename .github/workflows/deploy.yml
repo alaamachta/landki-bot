@@ -1,4 +1,4 @@
-name: Deploy Flask App to Azure
+name: Deploy Flask App to Azure via Azure Login
 
 on:
   push:
@@ -10,22 +10,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: ⬇️ Code aus Repository holen
+      - name: 📥 Repository auschecken
         uses: actions/checkout@v3
 
-      - name: 📦 Python-Umgebung einrichten
-        uses: actions/setup-python@v5
+      - name: 🔐 Azure Login
+        uses: azure/login@v1
         with:
-          python-version: '3.11'
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: 🧪 Abhängigkeiten installieren
+      - name: 🧼 Azure WebApp vor Deploy aufräumen (optional)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          az webapp config appsettings set \
+            --name landki-bot-app \
+            --resource-group LandKI-Test \
+            --settings SCM_DO_BUILD_DURING_DEPLOYMENT=true
 
-      - name: 🚀 Azure Web App deployen
+      - name: 🚀 Web App deployen
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'landki-bot-app'
-          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          app-name: landki-bot-app
+          slot-name: production
           package: .
