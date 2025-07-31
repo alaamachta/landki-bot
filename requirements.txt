@@ -14,7 +14,7 @@ colorlog>=6.7.0            # farbige Logs im Terminal
 
 msal>=1.24.0               # Microsoft Authentifizierung
 pyodbc>=5.1.0              # SQL-Zugriff
-pytz                      # Zeitzonen (z. B. Europe/Berlin)
+pytz==2024.1               # Zeitzonen (z. B. Europe/Berlin)
 python-dateutil>=2.8.2     # ISO-Zeitumwandlung etc.
 dateparser
 
