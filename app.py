@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0028 – OAuth2 mit robuster Fehlerbehandlung und Token-Refresh
+# app.py – LandKI-Terminassistent v1.0033 – OAuth2 
 
 import os
 import uuid
@@ -91,6 +91,31 @@ SCOPES = [
     "https://graph.microsoft.com/Mail.Send",
     "https://outlook.office365.com/SMTP.Send"
 ]
+
+# ✅ Globale Funktion für E-Mail-Versand via SMTP OAuth2
+def send_oauth_email(sender, recipient, msg, access_token):
+    try:
+        auth_string = f"user={sender}\x01auth=Bearer {access_token}\x01\x01"
+        auth_bytes = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
+        
+        with smtplib.SMTP("smtp.office365.com", 587, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+
+            code, response = server.docmd("AUTH", "XOAUTH2 " + auth_bytes)
+            if code != 235:
+                raise smtplib.SMTPAuthenticationError(code, response)
+
+            server.sendmail(sender, recipient, msg.as_string())
+            logging.info(f"✅ E-Mail an {recipient} gesendet via SMTP OAuth2")
+    except smtplib.SMTPAuthenticationError as auth_err:
+        logging.error(f"❌ AUTH-Fehler beim E-Mail-Versand: {auth_err.smtp_code} - {auth_err.smtp_error.decode()}")
+        raise
+    except Exception as e:
+        logging.exception(f"❌ Allgemeiner Fehler beim SMTP-Versand an {recipient}")
+        raise
+
 
 # ✅ Token-Refresh Funktion (zentral)
 def refresh_token_if_needed(msal_app, token_cache):
@@ -343,7 +368,7 @@ def book():
         {f'<p><strong>Ihre Nachricht:</strong><br>{data["user_message"]}</p>' if data.get('user_message') else ''}
         <p>Mit freundlichen Grüßen<br>Ihr Team</p>
         """
-
+        
         for rcp in [data['email'], SMTP_RECIPIENT]:
             try:
                 logging.info(f"📧 Sende E-Mail an {rcp}")
@@ -352,21 +377,15 @@ def book():
                 msg['To'] = rcp
                 msg['Subject'] = subject
                 msg.attach(MIMEText(html, 'html'))
-
-                def send_oauth_email(sender, recipient, msg, access_token):
-                    auth_string = f"user={sender}\x01auth=Bearer {access_token}\x01\x01"
-                    auth_bytes = base64.b64encode(auth_string.encode("utf-8"))
-                    SMTP_PORT = 587
-                    with smtplib.SMTP("smtp.office365.com", SMTP_PORT) as s:
-                        s.starttls()
-                        s.docmd("AUTH", "XOAUTH2 " + auth_bytes.decode("utf-8"))
-                        s.sendmail(sender, recipient, msg.as_string())
-
+        
                 send_oauth_email(SMTP_SENDER, rcp, msg, access_token)
-                logging.info(f"✅ E-Mail an {rcp} gesendet.")
-            except Exception as email_error:
-                logging.exception(f"❌ Fehler beim Senden der E-Mail an {rcp}")
-                return jsonify({"error": f"E-Mail-Fehler: {str(email_error)}"}), 500
+        
+            except Exception as e:
+                logging.exception(f"❌ Fehler beim Senden an {rcp}")
+
+
+
+
 
         return jsonify({"status": "success", "message": "Termin gebucht."})
 
