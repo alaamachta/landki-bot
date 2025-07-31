@@ -30,9 +30,9 @@ app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 # Session-Konfiguration (serverseitig)
 app.config["SESSION_TYPE"] = "filesystem"
 app.config["SESSION_FILE_DIR"] = "/tmp/flask_session"  # sicheres temp-Verzeichnis für Azure
-
 Session(app)
 
+# Logging und Zeitzone
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
     level=logging.DEBUG,  # vorher war INFO – nun volle Debug-Ausgabe
@@ -45,26 +45,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("landki")
 
-
+# Umgebungsvariablen laden
 SQL_SERVER = os.environ.get("SQL_SERVER")
 SQL_DB = os.environ.get("SQL_DATABASE")
 SQL_USER = os.environ.get("SQL_USERNAME")
 SQL_PASSWORD = os.environ.get("SQL_PASSWORD")
 SMTP_SENDER = os.environ.get("EMAIL_SENDER")
-if not SMTP_SENDER:
-    raise EnvironmentError("EMAIL_SENDER ist nicht gesetzt.")
 SMTP_RECIPIENT = "info@landki.com"
 AZURE_OPENAI_KEY = os.environ.get("AZURE_OPENAI_KEY")
 AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
 OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
-
 CLIENT_ID = os.environ.get("MS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MS_TENANT_ID")
 REDIRECT_URI = os.environ.get("MS_REDIRECT_URI") or "https://landki-bot-app-hrbtfefhgvasc5gk.germanywestcentral-01.azurewebsites.net/callback"
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
-SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite", "https://graph.microsoft.com/User.Read", "https://graph.microsoft.com/Mail.Send", "https://outlook.office365.com/SMTP.Send"]
+SCOPES = [
+    "https://graph.microsoft.com/Calendars.ReadWrite",
+    "https://graph.microsoft.com/User.Read",
+    "https://graph.microsoft.com/Mail.Send",
+    "https://outlook.office365.com/SMTP.Send"
+]
 
 @app.route("/calendar")
 def calendar():
@@ -364,13 +366,13 @@ def token_debug():
 def index():
     return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
 
-if __name__ == "__main__":
-    app.run(debug=True)  # nur lokal sinnvoll – Azure nutzt Gunicorn
 
-
+# Globaler Error Handler
 @app.errorhandler(Exception)
 def handle_exception(e):
     logging.exception("Unerwarteter Fehler: %s", e)
     return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
-
+# Starte Server nur lokal (nicht auf Azure)
+if __name__ == "__main__":
+    app.run(debug=True)
