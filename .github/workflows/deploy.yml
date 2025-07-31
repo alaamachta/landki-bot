@@ -1,4 +1,4 @@
-name: Deploy Flask App via FTPS (app.py + requirements.txt + runtime.txt)
+name: Deploy Flask App to Azure
 
 on:
   push:
@@ -6,19 +6,26 @@ on:
       - main
 
 jobs:
-  deploy-via-ftps:
+  build-and-deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
+      - name: ⬇️ Code aus Repository holen
+        uses: actions/checkout@v3
 
-    - name: Upload files via FTPS
-      run: |
-        echo "🔼 Hochladen von app.py, requirements.txt, runtime.txt via FTPS..."
+      - name: 📦 Python-Umgebung einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-        curl -T app.py --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/app.py"
-        curl -T requirements.txt --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/requirements.txt"
-        curl -T runtime.txt --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/runtime.txt"
+      - name: 🧪 Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-        echo "✅ Dateien erfolgreich hochgeladen."
+      - name: 🚀 Azure Web App deployen
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: 'landki-bot-app'
+          publish-profile: ${{ secrets.AZURE_PUBLISH_PROFILE }}
+          package: .
