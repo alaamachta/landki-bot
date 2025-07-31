@@ -89,9 +89,8 @@ def calendar():
         return redirect(auth_url)
 
     except Exception as e:
-        logging.exception("❌ Fehler in /calendar")
+        logging.exception("❌ Fehler in /calendar: " + str(e))
         return f"<pre>Fehler in /calendar: {str(e)}</pre>", 500
-
 
 
 @app.route("/callback")
@@ -210,7 +209,21 @@ def book():
                     logging.warning("⚠️ Silent Refresh fehlgeschlagen")
                     return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
 
+        # Token-Refresh erneut prüfen, direkt vor SMTP
+        if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
+            accounts = msal_app.get_accounts()
+            if accounts:
+                result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
+                if "access_token" in result:
+                    session["access_token"] = result["access_token"]
+                    session["token_expires"] = time.time() + result["expires_in"]
+                    session["token_cache"] = token_cache.serialize()
+                else:
+                    logging.warning("⚠️ Token für SMTP abgelaufen.")
+                    return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
+    
         access_token = session["access_token"]
+
         TZ = pytz.timezone("Europe/Berlin")
         start_time_utc = datetime.fromisoformat(data['selected_time'])
         start_local = start_time_utc.astimezone(TZ)
