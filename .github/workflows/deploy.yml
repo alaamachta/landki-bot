@@ -1,4 +1,4 @@
-name: FTP Deployment to Azure Web App
+name: Deploy Flask App via FTPS (app.py + requirements.txt + runtime.txt)
 
 on:
   push:
@@ -6,11 +6,8 @@ on:
       - main
 
 jobs:
-  ftp-deploy:
+  deploy-via-ftps:
     runs-on: ubuntu-latest
-
-    env:
-      APP_NAME: landki-bot-app-hrbtfefhgvasc5gk
 
     steps:
     - name: Checkout Repository
@@ -18,15 +15,10 @@ jobs:
 
     - name: Upload files via FTPS
       run: |
-        echo "Hochladen von app.py, requirements.txt, runtime.txt..."
-        curl -T app.py --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/app.py"
-        curl -T requirements.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/requirements.txt"
-        curl -T runtime.txt --user "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/runtime.txt"
+        echo "🔼 Hochladen von app.py, requirements.txt, runtime.txt via FTPS..."
 
-    - name: pip install auf Kudu ausführen
-      run: |
-        echo "pip install auf Kudu starten..."
-        curl -X POST "https://${{ env.APP_NAME }}.scm.azurewebsites.net/api/command" \
-          -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" \
-          -H "Content-Type: application/json" \
-          -d '{ "command": "pip install -r site\\wwwroot\\requirements.txt" }'
+        curl -T app.py --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/app.py"
+        curl -T requirements.txt --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/requirements.txt"
+        curl -T runtime.txt --ftp-ssl -u "${{ secrets.FTP_USERNAME }}:${{ secrets.FTP_PASSWORD }}" "ftps://${{ secrets.FTP_SERVER }}/site/wwwroot/runtime.txt"
+
+        echo "✅ Dateien erfolgreich hochgeladen."
