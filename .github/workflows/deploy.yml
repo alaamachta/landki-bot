@@ -37,7 +37,7 @@ jobs:
         curl -X DELETE -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
         "https://landki-bot-app-hrbtfefhgvasc5gk.scm.germanywestcentral-01.azurewebsites.net/api/vfs/site/wwwroot/"
 
-    - name: Deploy app.py + requirements.txt + runtime.txt
+    - name: Deploy uncompressed files to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
         app-name: landki-bot-app
