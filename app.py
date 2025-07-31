@@ -31,26 +31,26 @@ app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
 # 🔁 Redis Session-Konfiguration mit Fallback auf filesystem
-try:
-    redis_client = redis.StrictRedis(
-        host=os.getenv("REDIS_HOST"),
-        port=int(os.getenv("REDIS_PORT", "6380")),
-        password=os.getenv("REDIS_PASSWORD"),
-        ssl=True,
-        socket_connect_timeout=3,     # ⏱️ Schutz bei Hänger
-        socket_timeout=3              # ⏱️ auch für Antwortverzögerungen
-    )
-    redis_client.ping()
-    app.config["SESSION_TYPE"] = "redis"
-    app.config["SESSION_REDIS"] = redis_client
-    logging.info("✅ Redis-Verbindung erfolgreich (Session dauerhaft gesichert).")
-except Exception as e:
-    app.config["SESSION_TYPE"] = "filesystem"
-    logging.warning("⚠️ Redis nicht erreichbar – fallback auf filesystem. Token überleben Container-Neustarts NICHT! Grund: %s", str(e))
+#try:
+#    redis_client = redis.StrictRedis(
+#        host=os.getenv("REDIS_HOST"),
+#        port=int(os.getenv("REDIS_PORT", "6380")),
+#        password=os.getenv("REDIS_PASSWORD"),
+#        ssl=True,
+#        socket_connect_timeout=3,     # ⏱️ Schutz bei Hänger
+#        socket_timeout=3              # ⏱️ auch für Antwortverzögerungen
+#    )
+#    redis_client.ping()
+#    app.config["SESSION_TYPE"] = "redis"
+#    app.config["SESSION_REDIS"] = redis_client
+#    logging.info("✅ Redis-Verbindung erfolgreich (Session dauerhaft gesichert).")
+#except Exception as e:
+#    app.config["SESSION_TYPE"] = "filesystem"
+#    logging.warning("⚠️ Redis nicht erreichbar – fallback auf filesystem. Token überleben Container-Neustarts NICHT! Grund: %s", str(e))
 
 
 #Ohne Redis
-#app.config["SESSION_TYPE"] = "filesystem"
+app.config["SESSION_TYPE"] = "filesystem"
 
 
 
