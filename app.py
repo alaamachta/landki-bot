@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from msal import ConfidentialClientApplication, SerializableTokenCache
+from jwt import decode as jwt_decode
 
 app = Flask(__name__)
 CORS(app, origins=["https://it-land.net"], supports_credentials=True)
@@ -68,30 +69,56 @@ SCOPES = [
     "https://outlook.office365.com/SMTP.Send"
 ]
 
+# ✅ Token-Refresh Funktion (zentral)
+def refresh_token_if_needed(msal_app, token_cache):
+    if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
+        logging.info("🔄 Token abgelaufen oder fehlt – versuche Silent Refresh")
+        accounts = msal_app.get_accounts()
+        if accounts:
+            result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
+            if "access_token" in result:
+                session["access_token"] = result["access_token"]
+                session["token_expires"] = time.time() + result["expires_in"]
+                session["token_cache"] = token_cache.serialize()
+                logging.info("✅ Token erfolgreich erneuert (gültig bis %s)", session["token_expires"])
+                return True
+            else:
+                logging.warning("⚠️ Silent Refresh fehlgeschlagen")
+                return False
+        else:
+            logging.warning("⚠️ Keine Accounts verfügbar für Silent Refresh")
+            return False
+    return True
+
+
+# ✅ Optimierte Route: /calendar (mit Logging & Fehlerprüfung)
 @app.route("/calendar")
 def calendar():
-    try:
-        logging.info("🎯 CLIENT_ID: " + str(CLIENT_ID))
-        logging.info("🎯 CLIENT_SECRET vorhanden: " + str(bool(CLIENT_SECRET)))
-        logging.info("🎯 REDIRECT_URI: " + str(REDIRECT_URI))
+    if app.debug:
+        logging.debug("🎯 CLIENT_ID: %s", CLIENT_ID)
+        logging.debug("🎯 REDIRECT_URI: %s", REDIRECT_URI)
+        logging.debug("🎯 CLIENT_SECRET gesetzt: %s", bool(CLIENT_SECRET))  # nur lokal
 
+    try:
         msal_app = ConfidentialClientApplication(
             CLIENT_ID,
             authority=AUTHORITY,
             client_credential=CLIENT_SECRET
         )
+
         state = str(uuid.uuid4())
         session["state"] = state
+
         auth_url = msal_app.get_authorization_request_url(
             scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],
             state=state,
             redirect_uri=REDIRECT_URI
         )
-        logging.info("🔐 Weiterleitung zu Microsoft Login: " + auth_url)
+        logging.info("🔐 Weiterleitung zu Microsoft Login: %s", auth_url)
         return redirect(auth_url)
 
     except Exception as e:
-        logging.exception("❌ Fehler in /calendar: " + str(e))
+        logging.exception("❌ Fehler in /calendar: %s", str(e))
         return f"<pre>Fehler in /calendar: {str(e)}</pre>", 500
 
 
@@ -119,6 +146,7 @@ def authorized():
         return "Fehler beim Abrufen des Tokens. Siehe Log."
 
 
+# ✅ /chat Route mit Function Calling (optimiert)
 @app.route("/chat", methods=["POST"])
 def chat():
     try:
@@ -127,13 +155,17 @@ def chat():
         session["id"] = session_id
         logger.info(f"[CHAT] Session ID: {session_id}, Eingabe: {user_input}")
 
-        client = AzureOpenAI(api_key=AZURE_OPENAI_KEY, api_version=OPENAI_API_VERSION, azure_endpoint=AZURE_OPENAI_ENDPOINT)
+        client = AzureOpenAI(
+            api_key=AZURE_OPENAI_KEY,
+            api_version=OPENAI_API_VERSION,
+            azure_endpoint=AZURE_OPENAI_ENDPOINT
+        )
 
         response = client.chat.completions.create(
             model=AZURE_OPENAI_DEPLOYMENT,
             temperature=0.2,
             messages=[
-                {"role": "system", "content": "Du bist ein freundlicher deutschsprachiger Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze Function Calling, wenn alle Daten vorliegen."},
+                {"role": "system", "content": "Du bist ein deutschsprachiger, empathischer Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze Function Calling nur, wenn alle Felder ausgefüllt sind."},
                 {"role": "user", "content": user_input},
             ],
             tools=[
@@ -180,8 +212,8 @@ def chat():
         return jsonify({"response": choice.message.content})
 
     except Exception as e:
-        logging.exception("Fehler im /chat-Endpunkt")
-        return jsonify({"error": str(e)}), 500
+        logger.exception("❌ Fehler in /chat: %s", str(e))
+        return jsonify({"error": f"Interner Fehler im Chat: {str(e)}"}), 500
 
 @app.route("/book", methods=["POST"])
 def book():
@@ -199,31 +231,9 @@ def book():
             token_cache=token_cache
         )
 
-        if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
-            accounts = msal_app.get_accounts()
-            if accounts:
-                result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
-                if "access_token" in result:
-                    session["access_token"] = result["access_token"]
-                    session["token_expires"] = time.time() + result["expires_in"]
-                    session["token_cache"] = token_cache.serialize()
-                else:
-                    logging.warning("⚠️ Silent Refresh fehlgeschlagen")
-                    return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
-
-        # Token-Refresh erneut prüfen, direkt vor SMTP
-        if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
-            accounts = msal_app.get_accounts()
-            if accounts:
-                result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
-                if "access_token" in result:
-                    session["access_token"] = result["access_token"]
-                    session["token_expires"] = time.time() + result["expires_in"]
-                    session["token_cache"] = token_cache.serialize()
-                else:
-                    logging.warning("⚠️ Token für SMTP abgelaufen.")
-                    return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
-
+        if not refresh_token_if_needed(msal_app, token_cache):
+            return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
+            
         
         access_token = session.get("access_token")
         if not access_token:
@@ -242,7 +252,13 @@ def book():
             "end": {"dateTime": end_local.isoformat(), "timeZone": "Europe/Berlin"},
             "body": {"contentType": "HTML", "content": data.get('user_message', '')},
             "location": {"displayName": "LandKI Kalender"},
-            "attendees": []
+            "attendees": [
+                {
+                    "emailAddress": {"address": data["email"], "name": f"{data['first_name']} {data['last_name']}"},
+                    "type": "required"
+                }
+            ]
+
         }
 
         logging.info(f"🗓️ Versuche Outlook-Termin zu erstellen: {start_local} – {end_local}")
@@ -306,7 +322,8 @@ def book():
                 def send_oauth_email(sender, recipient, msg, access_token):
                     auth_string = f"user={sender}\x01auth=Bearer {access_token}\x01\x01"
                     auth_bytes = base64.b64encode(auth_string.encode("utf-8"))
-                    with smtplib.SMTP("smtp.office365.com", 587) as s:
+                    SMTP_PORT = 587
+                    with smtplib.SMTP("smtp.office365.com", SMTP_PORT) as s:
                         s.starttls()
                         s.docmd("AUTH", "XOAUTH2 " + auth_bytes.decode("utf-8"))
                         s.sendmail(sender, recipient, msg.as_string())
@@ -333,34 +350,33 @@ def health():
 # === Token-Debug ===
 @app.route("/token-debug")
 def token_debug():
-    token = session.get("access_token")  # Holt gespeicherten Token aus Session
+    token = session.get("access_token")
     if not token:
         return "Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
 
-    access_token = token
-    if not access_token:
-        return "Access Token fehlt im gespeicherten Token."
-
-    # Optional: JWT-Analyse vorbereiten (unsigniert)
     import jwt
     try:
-        decoded = jwt.decode(access_token, options={"verify_signature": False})
+        decoded = jwt.decode(token, options={"verify_signature": False})
     except Exception as e:
         return f"Fehler beim Decodieren: {e}"
 
-    # Klartext-Ausgabe
     scopes = decoded.get("scp", "Keine Scope-Angabe im Token")
+        
+    # ✅ Token-Ablaufzeit aus Session interpretieren
+    expires_at_unix = session.get("token_expires", 0)
+    expires_at = datetime.fromtimestamp(expires_at_unix, tz=berlin_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+
     html = f"""
         <h3>Access Token:</h3>
-        <textarea rows='6' cols='100'>{access_token}</textarea>
+        <textarea rows='6' cols='100'>{token}</textarea>
         <h3>Scopes im Token (scp):</h3>
         <pre>{scopes}</pre>
+        <h3>Gültig bis:</h3>
+        <pre>{expires_at}</pre>
         <h3>Kompletter JWT Payload (decoded):</h3>
         <pre>{decoded}</pre>
     """
     return html
-
-
 
 @app.route("/")
 def index():
