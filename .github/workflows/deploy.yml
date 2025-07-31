@@ -33,20 +33,22 @@ jobs:
         DEPLOY_USER: ${{ secrets.AZURE_DEPLOY_USER }}
         DEPLOY_PASSWORD: ${{ secrets.AZURE_DEPLOY_PASSWORD }}
       run: |
+        echo "Deleting old wwwroot content via Kudu API..."
         curl -X DELETE -u "$DEPLOY_USER:$DEPLOY_PASSWORD" \
         "https://landki-bot-app.scm.azurewebsites.net/api/vfs/site/wwwroot/"
 
-    - name: Create zip package manually
+    - name: Create ZIP for deployment
       run: |
-        mkdir build
-        cp app.py requirements.txt runtime.txt build/
-        cd build
+        mkdir zipdir
+        cp app.py requirements.txt runtime.txt zipdir/
+        cd zipdir
         zip -r ../deploy.zip .
         cd ..
 
-    - name: Deploy zip manually to Azure Web App
+    - name: Deploy ZIP to Azure Web App (uncompressed)
       uses: azure/webapps-deploy@v2
       with:
         app-name: landki-bot-app
         package: deploy.zip
-        clean: true
+        clean: false
+        enable-oryx-build: false
