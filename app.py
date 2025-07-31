@@ -266,8 +266,13 @@ def book():
         
         access_token = session.get("access_token")
         if not access_token:
-            logging.error("Access token fehlt in session.")
+            logging.error("❌ Access Token fehlt – evtl. Session abgelaufen.")
             return jsonify({"error": "Kein Access Token gefunden. Bitte neu einloggen."}), 401
+    
+        # 🔍 Debugging: Länge und Ausschnitt vom Token anzeigen
+        logging.info(f"📧 Access Token geladen. Start: {access_token[:20]}... Länge: {len(access_token)}")
+        logging.info(f"📧 Access Token SMTP beginnt mit: {access_token[:25]}... (Länge: {len(access_token)})")
+        
 
 
         TZ = pytz.timezone("Europe/Berlin")
