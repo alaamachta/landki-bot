@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0033 – OAuth2 
+# app.py – LandKI-Terminassistent v1.0034 – Optimiert ohne Redis
 
 import os
 import uuid
@@ -11,8 +11,6 @@ import pyodbc
 import base64
 import time
 import sys
-import redis
-import socket
 
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
@@ -30,42 +28,17 @@ app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
-# 🔁 Redis Session-Konfiguration mit Fallback auf filesystem
-#try:
-#    redis_client = redis.StrictRedis(
-#        host=os.getenv("REDIS_HOST"),
-#        port=int(os.getenv("REDIS_PORT", "6380")),
-#        password=os.getenv("REDIS_PASSWORD"),
-#        ssl=True,
-#        socket_connect_timeout=3,     # ⏱️ Schutz bei Hänger
-#        socket_timeout=3              # ⏱️ auch für Antwortverzögerungen
-#    )
-#    redis_client.ping()
-#    app.config["SESSION_TYPE"] = "redis"
-#    app.config["SESSION_REDIS"] = redis_client
-#    logging.info("✅ Redis-Verbindung erfolgreich (Session dauerhaft gesichert).")
-#except Exception as e:
-#    app.config["SESSION_TYPE"] = "filesystem"
-#    logging.warning("⚠️ Redis nicht erreichbar – fallback auf filesystem. Token überleben Container-Neustarts NICHT! Grund: %s", str(e))
-
-
-#Ohne Redis
+# Kein Redis, nur Filesystem
 app.config["SESSION_TYPE"] = "filesystem"
-
-
-
 Session(app)
 
-# Logging und Zeitzone
+# Logging + Zeitzone
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
-    level=logging.DEBUG,  # vorher war INFO – nun volle Debug-Ausgabe
+    level=logging.DEBUG, # vorher war INFO – nun volle Debug-Ausgabe
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.StreamHandler(sys.stderr)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout), logging.StreamHandler(sys.stderr)]
 )
 logger = logging.getLogger("landki")
 
@@ -83,7 +56,7 @@ OPENAI_API_VERSION = os.environ.get("OPENAI_API_VERSION", "2024-10-21")
 CLIENT_ID = os.environ.get("MS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("MS_CLIENT_SECRET")
 TENANT_ID = os.environ.get("MS_TENANT_ID")
-REDIRECT_URI = os.environ.get("MS_REDIRECT_URI") or "https://landki-bot-app-hrbtfefhgvasc5gk.germanywestcentral-01.azurewebsites.net/callback"
+REDIRECT_URI = os.environ.get("MS_REDIRECT_URI")
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = [
     "https://graph.microsoft.com/Calendars.ReadWrite",
@@ -91,6 +64,192 @@ SCOPES = [
     "https://graph.microsoft.com/Mail.Send",
     "https://outlook.office365.com/SMTP.Send"
 ]
+
+# ✅ Token automatisch erneuern, wenn nötig
+def refresh_token_if_needed():
+    token_cache = SerializableTokenCache()
+    if "token_cache" in session:
+        token_cache.deserialize(session["token_cache"])
+
+    msal_app = ConfidentialClientApplication(
+        CLIENT_ID,
+        authority=AUTHORITY,
+        client_credential=CLIENT_SECRET,
+        token_cache=token_cache
+    )
+
+    if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
+        logging.info("🔄 Token abgelaufen oder fehlt – versuche Silent Refresh")
+        accounts = msal_app.get_accounts()
+        if accounts:
+            result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
+            if "access_token" in result:
+                session["access_token"] = result["access_token"]
+                session["token_expires"] = time.time() + result["expires_in"]
+                session["token_cache"] = token_cache.serialize()
+                logging.info("✅ Token erneuert – gültig bis %s", session["token_expires"])
+                return True
+            else:
+                logging.warning("⚠️ Silent Refresh fehlgeschlagen")
+        else:
+            logging.warning("⚠️ Keine Accounts für Silent Refresh")
+        return False
+
+    return True
+
+@app.route("/chat", methods=["POST"])
+def chat():
+    if not refresh_token_if_needed():
+        return jsonify({"response": "⚠️ Bitte erneut unter /calendar anmelden – Token abgelaufen."}), 401
+
+    user_input = request.get_json().get("message")
+    session_id = session.get("id") or str(uuid.uuid4())
+    session["id"] = session_id
+    logger.info(f"[CHAT] Session ID: {session_id}, Eingabe: {user_input}")
+
+    client = AzureOpenAI(
+        api_key=AZURE_OPENAI_KEY,
+        api_version=OPENAI_API_VERSION,
+        azure_endpoint=AZURE_OPENAI_ENDPOINT
+    )
+
+    response = client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        temperature=0.2,
+        messages=[
+            {"role": "system", "content": "Du bist ein deutschsprachiger, empathischer Terminassistent."},
+            {"role": "user", "content": user_input},
+        ],
+        tools=[{
+            "type": "function",
+            "function": {
+                "name": "book_appointment",
+                "description": "Bucht einen Termin",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "first_name": {"type": "string"},
+                        "last_name": {"type": "string"},
+                        "email": {"type": "string"},
+                        "selected_time": {"type": "string", "format": "date-time"},
+                        "user_message": {"type": "string"}
+                    },
+                    "required": ["first_name", "last_name", "email", "selected_time"]
+                }
+            }
+        }],
+        tool_choice="auto"
+    )
+
+    choice = response.choices[0]
+    if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+        for tool_call in choice.message.tool_calls:
+            if tool_call.function.name == "book_appointment":
+                args = json.loads(tool_call.function.arguments)
+                with app.test_client() as client:
+                    with client.session_transaction() as sess:
+                        sess.update(session)
+                    book_resp = client.post("/book", json=args)
+                    result = book_resp.get_json()
+                    if book_resp.status_code == 200:
+                        return jsonify({"response": "✅ Termin erfolgreich gebucht."})
+                    elif book_resp.status_code == 401:
+                        return jsonify({"response": "⚠️ Bitte erneut unter /calendar anmelden."})
+                    else:
+                        return jsonify({"response": f"⚠️ Fehler: {result.get('error', 'Unbekannt')}"})
+
+    return jsonify({"response": choice.message.content})
+
+@app.route("/available-times")
+def available_times():
+    if not refresh_token_if_needed():
+        return jsonify({"error": "⚠️ Zugriffstoken abgelaufen. Bitte unter /calendar neu anmelden."}), 401
+
+    access_token = session.get("access_token")
+    if not access_token:
+        return jsonify({"error": "⚠️ Kein Zugriffstoken gefunden."}), 401
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Prefer": 'outlook.timezone="Europe/Berlin"'
+    }
+
+    # Zeitraum: 1 Jahr im Voraus
+    now = datetime.now(berlin_tz)
+    start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    end_time = now + timedelta(days=365)
+    end_time = end_time.replace(hour=17, minute=0, second=0, microsecond=0)
+
+    # Schrittweise abrufen: MS Graph erlaubt nur ca. 30 Tage pro Abfrage
+    interval_days = 30
+    busy_slots = []
+
+    for offset in range(0, 365, interval_days):
+        period_start = start_time + timedelta(days=offset)
+        period_end = min(start_time + timedelta(days=offset + interval_days), end_time)
+
+        url = (
+            f"https://graph.microsoft.com/v1.0/me/calendarview"
+            f"?startdatetime={period_start.isoformat()}&enddatetime={period_end.isoformat()}"
+            f"&$orderby=start/dateTime"
+        )
+
+        response = requests.get(url, headers=headers)
+        if response.status_code != 200:
+            logging.error("❌ Fehler beim Kalenderabruf: %s", response.text)
+            continue
+
+        for event in response.json().get("value", []):
+            start = datetime.fromisoformat(event["start"]["dateTime"])
+            end = datetime.fromisoformat(event["end"]["dateTime"])
+            busy_slots.append((start, end))
+
+    # Slots generieren: 15-minütig, nur Mo–Fr, 09–17 Uhr
+    free_slots = []
+    current = start_time
+    while current < end_time:
+        if current.weekday() < 5:  # Mo–Fr
+            slot_end = current + timedelta(minutes=15)
+            if not any(start < slot_end and current < end for start, end in busy_slots):
+                free_slots.append(current.isoformat())
+        current += timedelta(minutes=15)
+
+    logging.info("📅 %s freie Slots im Jahr gefunden", len(free_slots))
+    return jsonify({"slots": free_slots})
+
+
+@app.route("/token-debug")
+def token_debug():
+    token = session.get("access_token")
+    if not token:
+        return "⚠️ Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
+
+    try:
+        decoded = jwt_decode(token, options={"verify_signature": False})
+    except Exception as e:
+        return f"Fehler beim Decodieren: {e}"
+
+    scopes = decoded.get("scp", "Keine Scope-Angabe im Token")
+    expires_at_unix = session.get("token_expires", 0)
+    expires_at = datetime.fromtimestamp(expires_at_unix, tz=berlin_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    html = f"""
+        <h2>Token-Debug</h2>
+        <h3>Access Token:</h3>
+        <textarea rows='6' cols='100'>{token}</textarea>
+        <h3>Scopes im Token (scp):</h3>
+        <pre>{scopes}</pre>
+        <h3>Gültig bis:</h3>
+        <pre>{expires_at}</pre>
+        <h3>Kompletter JWT Payload (decoded):</h3>
+        <pre>{json.dumps(decoded, indent=2)}</pre>
+    """
+    return html
+
+@app.route("/")
+def index():
+    return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
+
 
 # ✅ Globale Funktion für E-Mail-Versand via SMTP OAuth2
 def send_oauth_email(sender, recipient, msg, access_token):
@@ -115,29 +274,6 @@ def send_oauth_email(sender, recipient, msg, access_token):
     except Exception as e:
         logging.exception(f"❌ Allgemeiner Fehler beim SMTP-Versand an {recipient}")
         raise
-
-
-# ✅ Token-Refresh Funktion (zentral)
-def refresh_token_if_needed(msal_app, token_cache):
-    if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
-        logging.info("🔄 Token abgelaufen oder fehlt – versuche Silent Refresh")
-        accounts = msal_app.get_accounts()
-        if accounts:
-            result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
-            if "access_token" in result:
-                session["access_token"] = result["access_token"]
-                session["token_expires"] = time.time() + result["expires_in"]
-                session["token_cache"] = token_cache.serialize()
-                logging.info("✅ Token erfolgreich erneuert (gültig bis %s)", session["token_expires"])
-                return True
-            else:
-                logging.warning("⚠️ Silent Refresh fehlgeschlagen")
-                return False
-        else:
-            logging.warning("⚠️ Keine Accounts verfügbar für Silent Refresh")
-            return False
-    return True
-
 
 # ✅ Optimierte Route: /calendar (mit Logging & Fehlerprüfung)
 @app.route("/calendar")
@@ -198,76 +334,6 @@ def authorized():
     else:
         logging.error("❌ Fehler beim Token-Abruf: %s", result)
         return "Fehler beim Abrufen des Tokens. Siehe Log."
-
-
-# ✅ /chat Route mit Function Calling (optimiert)
-@app.route("/chat", methods=["POST"])
-def chat():
-    try:
-        user_input = request.get_json()["message"]
-        session_id = session.get("id") or str(uuid.uuid4())
-        session["id"] = session_id
-        logger.info(f"[CHAT] Session ID: {session_id}, Eingabe: {user_input}")
-
-        client = AzureOpenAI(
-            api_key=AZURE_OPENAI_KEY,
-            api_version=OPENAI_API_VERSION,
-            azure_endpoint=AZURE_OPENAI_ENDPOINT
-        )
-
-        response = client.chat.completions.create(
-            model=AZURE_OPENAI_DEPLOYMENT,
-            temperature=0.2,
-            messages=[
-                {"role": "system", "content": "Du bist ein deutschsprachiger, empathischer Terminassistent. Bitte hilf dem Nutzer, einen Termin zu buchen. Nutze Function Calling nur, wenn alle Felder ausgefüllt sind."},
-                {"role": "user", "content": user_input},
-            ],
-            tools=[
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "book_appointment",
-                        "description": "Bucht einen Termin in Outlook, speichert ihn in SQL und versendet E-Mails",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "first_name": {"type": "string"},
-                                "last_name": {"type": "string"},
-                                "email": {"type": "string"},
-                                "selected_time": {"type": "string", "format": "date-time"},
-                                "user_message": {"type": "string"}
-                            },
-                            "required": ["first_name", "last_name", "email", "selected_time"]
-                        }
-                    }
-                }
-            ],
-            tool_choice="auto"
-        )
-
-        choice = response.choices[0]
-
-        if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
-            for tool_call in choice.message.tool_calls:
-                if tool_call.function.name == "book_appointment":
-                    args = json.loads(tool_call.function.arguments)
-                    with app.test_client() as client:
-                        with client.session_transaction() as sess:
-                            sess.update(session)
-                        book_resp = client.post("/book", json=args)
-                        result = book_resp.get_json()
-                        if book_resp.status_code == 200:
-                            return jsonify({"response": "✅ Termin erfolgreich gebucht."})
-                        elif book_resp.status_code == 401:
-                            return jsonify({"response": "⚠️ Bitte melde dich neu an unter /calendar – der Zugriffstoken ist abgelaufen."})
-                        else:
-                            return jsonify({"response": f"⚠️ Fehler: {result.get('error', 'Unbekannt')}"})
-
-        return jsonify({"response": choice.message.content})
-
-    except Exception as e:
-        logger.exception("❌ Fehler in /chat: %s", str(e))
-        return jsonify({"error": f"Interner Fehler im Chat: {str(e)}"}), 500
 
 @app.route("/book", methods=["POST"])
 def book():
@@ -396,24 +462,6 @@ def book():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"}), 200
-
-
-
-
-# === Token-Debug ===
-@app.route("/token-debug")
-def token_debug():
-    token = session.get("access_token")
-    if not token:
-        return "Kein Token gefunden. Bitte zuerst unter /calendar anmelden."
-
-    import jwt
-    try:
-        decoded = jwt.decode(token, options={"verify_signature": False})
-    except Exception as e:
-        return f"Fehler beim Decodieren: {e}"
-
-    scopes = decoded.get("scp", "Keine Scope-Angabe im Token")
         
     # ✅ Token-Ablaufzeit aus Session interpretieren
     expires_at_unix = session.get("token_expires", 0)
