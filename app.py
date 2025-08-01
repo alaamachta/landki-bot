@@ -259,11 +259,6 @@ def token_debug():
     """
     return html
 
-# 🏠 ROUTE: Index / Startseite
-@app.route("/")
-def index():
-    return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
-
 # 📤 E-Mail-Versand via SMTP mit OAuth2
 # =============================================
 # Diese Funktion sendet E-Mails mit Microsoft-Konto über SMTP und OAuth2.
