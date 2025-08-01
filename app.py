@@ -359,7 +359,6 @@ def authorized():
     if "access_token" in result:
         session["access_token"] = result["access_token"]               # für Outlook + E-Mail
         session["token_expires"] = time.time() + result["expires_in"]  # Ablaufzeit merken
-        session["token_cache"] = msal_app.token_cache.serialize()      # Cache für spätere Nutzung (z. B. Refresh)
         return redirect("/token-debug")
 
     else:
