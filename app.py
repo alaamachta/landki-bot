@@ -1,4 +1,4 @@
-# app.py – LandKI-Terminassistent v1.0040 – vollständig kommentiert und modularisiert
+# app.py – LandKI-Terminassistent v1.0041 – vollständig kommentiert und modularisiert
 
 # === 📦 Imports ===
 import os
@@ -325,12 +325,6 @@ def calendar():
     except Exception as e:
         logging.exception("❌ Fehler in /calendar: %s", str(e))
         return f"<pre>Fehler in /calendar: {str(e)}</pre>", 500
-
-# Nach erfolgreichem Login
-# Die Session-Variablen für Access Token und Ablaufzeit werden in /callback gesetzt:
-session["token_cache"] = token_cache.serialize()
-session["token_expires"] = time.time() + result["expires_in"]
-session["access_token"] = result["access_token"]
 
 # === OAuth2 Callback: Microsoft-Login bestätigt ===
 @app.route("/callback")
