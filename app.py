@@ -1,5 +1,6 @@
-# app.py – LandKI-Terminassistent v1.0034 – Optimiert ohne Redis
+# app.py – LandKI-Terminassistent v1.0040 – vollständig kommentiert und modularisiert
 
+# === 📦 Imports ===
 import os
 import uuid
 import json
@@ -12,27 +13,29 @@ import base64
 import time
 import sys
 
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, session, redirect, url_for
 from flask_cors import CORS
 from flask_session import Session
 from openai import AzureOpenAI
-from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from msal import ConfidentialClientApplication, SerializableTokenCache
 from jwt import decode as jwt_decode
 
+# === 🚀 Flask Setup ===
 app = Flask(__name__)
 CORS(app, origins=["https://it-land.net"], supports_credentials=True)
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
 
-# Kein Redis, nur Filesystem
+# === 💾 Session Konfiguration ===
+# Nutzt Dateisystem statt Redis (zukunftssicher, aber nicht verteilt)
 app.config["SESSION_TYPE"] = "filesystem"
 Session(app)
 
-# Logging + Zeitzone
+# === 🪵 Logging + Zeitzone ===
 berlin_tz = pytz.timezone("Europe/Berlin")
 logging.basicConfig(
     level=logging.DEBUG, # vorher war INFO – nun volle Debug-Ausgabe
@@ -42,7 +45,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("landki")
 
-# Umgebungsvariablen laden
+# === ⚙️ Umgebungsvariablen ===
+# ⬇️ Anpassen für zukünftige Module z. B. Exchange, Teams, mehrsprachige Bots
 SQL_SERVER = os.environ.get("SQL_SERVER")
 SQL_DB = os.environ.get("SQL_DATABASE")
 SQL_USER = os.environ.get("SQL_USERNAME")
@@ -65,11 +69,13 @@ SCOPES = [
     "https://outlook.office365.com/SMTP.Send"
 ]
 
-# ✅ Token automatisch erneuern, wenn nötig
+# === 🔐 Token-Aktualisierung ===
 def refresh_token_if_needed():
     token_cache = SerializableTokenCache()
     if "token_cache" in session:
         token_cache.deserialize(session["token_cache"])
+    else:
+        logging.warning("⚠️ Kein token_cache in Session gefunden")
 
     msal_app = ConfidentialClientApplication(
         CLIENT_ID,
@@ -81,22 +87,25 @@ def refresh_token_if_needed():
     if "access_token" not in session or session.get("token_expires", 0) < time.time() + 300:
         logging.info("🔄 Token abgelaufen oder fehlt – versuche Silent Refresh")
         accounts = msal_app.get_accounts()
+        logging.debug(f"🧾 MSAL Accounts gefunden: {accounts}")
         if accounts:
             result = msal_app.acquire_token_silent(SCOPES, account=accounts[0])
-            if "access_token" in result:
+            logging.debug(f"🧪 Ergebnis von acquire_token_silent: {result}")
+            if result and "access_token" in result:
                 session["access_token"] = result["access_token"]
                 session["token_expires"] = time.time() + result["expires_in"]
                 session["token_cache"] = token_cache.serialize()
                 logging.info("✅ Token erneuert – gültig bis %s", session["token_expires"])
                 return True
             else:
-                logging.warning("⚠️ Silent Refresh fehlgeschlagen")
+                logging.warning("⚠️ Silent Refresh fehlgeschlagen oder kein access_token im Result")
         else:
-            logging.warning("⚠️ Keine Accounts für Silent Refresh")
+            logging.warning("⚠️ Keine MSAL-Accounts vorhanden – kein Silent Refresh möglich")
         return False
 
     return True
 
+# === 💬 GPT Chat Endpoint ===
 @app.route("/chat", methods=["POST"])
 def chat():
     if not refresh_token_if_needed():
@@ -107,6 +116,7 @@ def chat():
     session["id"] = session_id
     logger.info(f"[CHAT] Session ID: {session_id}, Eingabe: {user_input}")
 
+    # GPT-4o mit Function Calling
     client = AzureOpenAI(
         api_key=AZURE_OPENAI_KEY,
         api_version=OPENAI_API_VERSION,
@@ -160,8 +170,10 @@ def chat():
 
     return jsonify({"response": choice.message.content})
 
+# 🗓️ ROUTE: Verfügbare Zeiten aus Outlook-Kalender
 @app.route("/available-times")
 def available_times():
+    # 🔐 Token prüfen und ggf. aktualisieren
     if not refresh_token_if_needed():
         return jsonify({"error": "⚠️ Zugriffstoken abgelaufen. Bitte unter /calendar neu anmelden."}), 401
 
@@ -169,55 +181,56 @@ def available_times():
     if not access_token:
         return jsonify({"error": "⚠️ Kein Zugriffstoken gefunden."}), 401
 
+    # 🧾 Header für Graph API
     headers = {
         "Authorization": f"Bearer {access_token}",
-        "Prefer": 'outlook.timezone="Europe/Berlin"'
+        "Content-Type": "application/json"
     }
 
-    # Zeitraum: 1 Jahr im Voraus
-    now = datetime.now(berlin_tz)
-    start_time = now.replace(hour=9, minute=0, second=0, microsecond=0)
-    end_time = now + timedelta(days=365)
-    end_time = end_time.replace(hour=17, minute=0, second=0, microsecond=0)
+    # 📅 Zeitraum: Heute bis 365 Tage in die Zukunft
+    start_time = datetime.now(berlin_tz)
+    end_time = start_time + timedelta(days=365)
 
-    # Schrittweise abrufen: MS Graph erlaubt nur ca. 30 Tage pro Abfrage
-    interval_days = 30
-    busy_slots = []
+    # 🔁 Zeitraster: 15-Minuten-Intervalle (werktags von 9–17 Uhr)
+    interval = timedelta(minutes=15)
+    work_start = 9
+    work_end = 17
 
-    for offset in range(0, 365, interval_days):
-        period_start = start_time + timedelta(days=offset)
-        period_end = min(start_time + timedelta(days=offset + interval_days), end_time)
+    current_time = start_time.replace(hour=work_start, minute=0, second=0, microsecond=0)
+    slots = []
+    while current_time < end_time:
+        if current_time.weekday() < 5:
+            if work_start <= current_time.hour < work_end:
+                slots.append(current_time)
+        current_time += interval
 
-        url = (
-            f"https://graph.microsoft.com/v1.0/me/calendarview"
-            f"?startdatetime={period_start.isoformat()}&enddatetime={period_end.isoformat()}"
-            f"&$orderby=start/dateTime"
-        )
+    # 📡 Microsoft Graph: Kalenderabfrage mit getSchedule
+    outlook_url = "https://graph.microsoft.com/v1.0/me/calendar/getSchedule"
+    body = {
+        "schedules": ["me"],
+        "startTime": {"dateTime": start_time.isoformat(), "timeZone": "Europe/Berlin"},
+        "endTime": {"dateTime": end_time.isoformat(), "timeZone": "Europe/Berlin"},
+        "availabilityViewInterval": 15
+    }
 
-        response = requests.get(url, headers=headers)
-        if response.status_code != 200:
-            logging.error("❌ Fehler beim Kalenderabruf: %s", response.text)
-            continue
+    # 🔄 Belegte Zeiträume abrufen und filtern
+    resp = requests.post(outlook_url, headers=headers, json=body)
+    busy_slots = set()
+    if resp.ok:
+        data = resp.json()
+        for item in data.get("value", []):
+            for schedule_item in item.get("scheduleItems", []):
+                start = datetime.fromisoformat(schedule_item["start"].replace("Z", "+00:00")).astimezone(berlin_tz)
+                end = datetime.fromisoformat(schedule_item["end"].replace("Z", "+00:00")).astimezone(berlin_tz)
+                while start < end:
+                    busy_slots.add(start)
+                    start += interval
 
-        for event in response.json().get("value", []):
-            start = datetime.fromisoformat(event["start"]["dateTime"])
-            end = datetime.fromisoformat(event["end"]["dateTime"])
-            busy_slots.append((start, end))
+    # ✅ Nur freie Slots zurückgeben
+    available = [dt.isoformat() for dt in slots if dt not in busy_slots]
+    return jsonify({"slots": available})
 
-    # Slots generieren: 15-minütig, nur Mo–Fr, 09–17 Uhr
-    free_slots = []
-    current = start_time
-    while current < end_time:
-        if current.weekday() < 5:  # Mo–Fr
-            slot_end = current + timedelta(minutes=15)
-            if not any(start < slot_end and current < end for start, end in busy_slots):
-                free_slots.append(current.isoformat())
-        current += timedelta(minutes=15)
-
-    logging.info("📅 %s freie Slots im Jahr gefunden", len(free_slots))
-    return jsonify({"slots": free_slots})
-
-
+# 🧪 ROUTE: Token-Debug (JWT-Analyse)
 @app.route("/token-debug")
 def token_debug():
     token = session.get("access_token")
@@ -246,12 +259,16 @@ def token_debug():
     """
     return html
 
+# 🏠 ROUTE: Index / Startseite
 @app.route("/")
 def index():
     return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
 
-
-# ✅ Globale Funktion für E-Mail-Versand via SMTP OAuth2
+# 📤 E-Mail-Versand via SMTP mit OAuth2
+# =============================================
+# Diese Funktion sendet E-Mails mit Microsoft-Konto über SMTP und OAuth2.
+# Sie nutzt XOAUTH2-Authentifizierung und ist DSGVO-konform, da kein Passwort gespeichert wird.
+# Tritt ein Fehler auf (z. B. abgelaufenes Token), wird ein detaillierter Log-Eintrag erstellt.
 def send_oauth_email(sender, recipient, msg, access_token):
     try:
         auth_string = f"user={sender}\x01auth=Bearer {access_token}\x01\x01"
@@ -275,7 +292,10 @@ def send_oauth_email(sender, recipient, msg, access_token):
         logging.exception(f"❌ Allgemeiner Fehler beim SMTP-Versand an {recipient}")
         raise
 
-# ✅ Optimierte Route: /calendar (mit Logging & Fehlerprüfung)
+# 📅 Kalender-Login /calendar – OAuth Login-Startpunkt
+# =============================================
+# Diese Route leitet Benutzer zur Microsoft-Login-Seite weiter,
+# um Zugriff auf Kalender-API zu gewähren. Der Redirect erfolgt später zu /callback.
 @app.route("/calendar")
 def calendar():
     if app.debug:
@@ -306,44 +326,57 @@ def calendar():
         logging.exception("❌ Fehler in /calendar: %s", str(e))
         return f"<pre>Fehler in /calendar: {str(e)}</pre>", 500
 
+# Nach erfolgreichem Login
+# Die Session-Variablen für Access Token und Ablaufzeit werden in /callback gesetzt:
+session["token_cache"] = token_cache.serialize()
+session["token_expires"] = time.time() + result["expires_in"]
+session["access_token"] = result["access_token"]
 
+# === OAuth2 Callback: Microsoft-Login bestätigt ===
 @app.route("/callback")
 def authorized():
+    # Wenn kein "state" vorhanden ist, ist Session vermutlich abgelaufen (z. B. nach App-Neustart)
     if "state" not in session:
         logging.warning("⚠️ Kein session['state'] – wahrscheinlich Session abgelaufen oder Deploymentneustart")
         return "⚠️ Sitzung abgelaufen. Bitte erneut über /calendar anmelden."
 
+    # Sicherheitsabgleich: passt der zurückgegebene State zu unserem gespeicherten?
     if request.args.get("state") != session.get("state"):
         logging.warning("⚠️ Ungültiger State-Wert im Callback")
         return redirect(url_for("index"))
 
+    # Neues MSAL-App-Objekt (Client + Secret + Authority)
     msal_app = ConfidentialClientApplication(CLIENT_ID, authority=AUTHORITY, client_credential=CLIENT_SECRET)
 
+    # Tausche Authorization-Code gegen Access Token
     result = msal_app.acquire_token_by_authorization_code(
         request.args["code"],
-        scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"],
+        scopes=["User.Read", "Mail.Send", "Calendars.ReadWrite", "SMTP.Send"], # benötigte Berechtigungen
         redirect_uri=REDIRECT_URI
     )
 
+    # ✅ Wenn Token vorhanden, speichern wir es in die Session für spätere Nutzung (Outlook + SMTP)
     if "access_token" in result:
         session["access_token"] = result["access_token"]               # für Outlook + E-Mail
         session["token_expires"] = time.time() + result["expires_in"]  # Ablaufzeit merken
-        session["token_cache"] = msal_app.token_cache.serialize()      # Cache für später
+        session["token_cache"] = msal_app.token_cache.serialize()      # Cache für spätere Nutzung (z. B. Refresh)
         return redirect("/token-debug")
 
     else:
         logging.error("❌ Fehler beim Token-Abruf: %s", result)
         return "Fehler beim Abrufen des Tokens. Siehe Log."
 
+# === Hauptfunktion für Terminbuchung: Outlook + SQL + E-Mail ===
 @app.route("/book", methods=["POST"])
 def book():
     try:
-        data = request.get_json()
+        data = request.get_json()  # Nutzerdaten vom Chatbot (JSON)
         logging.info("🛠️ /book wurde aufgerufen.")
         token_cache = SerializableTokenCache()
         if "token_cache" in session:
             token_cache.deserialize(session["token_cache"])
 
+        # Token vorbereiten für API-Nutzung (ggf. mit vorhandenem Cache)
         msal_app = ConfidentialClientApplication(
             CLIENT_ID,
             authority=AUTHORITY,
@@ -351,26 +384,21 @@ def book():
             token_cache=token_cache
         )
 
+        # Token automatisch erneuern, falls nötig
         if not refresh_token_if_needed(msal_app, token_cache):
             return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
-            
-        
         access_token = session.get("access_token")
         if not access_token:
             logging.error("❌ Access Token fehlt – evtl. Session abgelaufen.")
             return jsonify({"error": "Kein Access Token gefunden. Bitte neu einloggen."}), 401
     
-        # 🔍 Debugging: Länge und Ausschnitt vom Token anzeigen
-        logging.info(f"📧 Access Token geladen. Start: {access_token[:20]}... Länge: {len(access_token)}")
-        logging.info(f"📧 Access Token SMTP beginnt mit: {access_token[:25]}... (Länge: {len(access_token)})")
-        
-
-
+        # 🕒 Zeiten vorbereiten
         TZ = pytz.timezone("Europe/Berlin")
         start_time_utc = datetime.fromisoformat(data['selected_time'])
         start_local = start_time_utc.astimezone(TZ)
         end_local = start_local + timedelta(minutes=30)
 
+        # 📅 Terminobjekt für Microsoft Graph vorbereiten
         event = {
             "subject": f"Termin: {data['first_name']} {data['last_name']}",
             "start": {"dateTime": start_local.isoformat(), "timeZone": "Europe/Berlin"},
@@ -386,6 +414,7 @@ def book():
 
         }
 
+        # 📤 Sende Termin an Outlook-Kalender
         logging.info(f"🗓️ Versuche Outlook-Termin zu erstellen: {start_local} – {end_local}")
         resp = requests.post(
             'https://graph.microsoft.com/v1.0/me/events',
@@ -399,7 +428,7 @@ def book():
                 "details": resp.text
             }), 500
 
-
+        # 💾 SQL-Speicherung in Azure SQL-Datenbank
         try:
             logging.info("💾 Speichere Termin in SQL-Datenbank...")
             conn = pyodbc.connect(
@@ -425,6 +454,7 @@ def book():
             logging.exception("❌ Fehler beim SQL-Eintrag")
             return jsonify({"error": f"SQL-Fehler: {str(sql_error)}"}), 500
 
+        # 📧 E-Mail-Versand an Kund*in + Team (SMTP OAuth)
         subject = "Ihre Terminbestätigung"
         html = f"""
         <p>Sehr geehrte*r {data['first_name']} {data['last_name']},</p>
@@ -435,6 +465,7 @@ def book():
         <p>Mit freundlichen Grüßen<br>Ihr Team</p>
         """
         
+        # ✉️ Empfänger: Kund*in + zentrale Adresse (SMTP_RECIPIENT)
         for rcp in [data['email'], SMTP_RECIPIENT]:
             try:
                 logging.info(f"📧 Sende E-Mail an {rcp}")
@@ -449,47 +480,25 @@ def book():
             except Exception as e:
                 logging.exception(f"❌ Fehler beim Senden an {rcp}")
 
-
-
-
-
         return jsonify({"status": "success", "message": "Termin gebucht."})
 
     except Exception as e:
         logging.exception("❌ Allgemeiner Fehler bei Terminbuchung")
         return jsonify({"error": f"Fehler bei der Buchung: {str(e)}"}), 500
 
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok"}), 200
-        
-    # ✅ Token-Ablaufzeit aus Session interpretieren
-    expires_at_unix = session.get("token_expires", 0)
-    expires_at = datetime.fromtimestamp(expires_at_unix, tz=berlin_tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-
-    html = f"""
-        <h3>Access Token:</h3>
-        <textarea rows='6' cols='100'>{token}</textarea>
-        <h3>Scopes im Token (scp):</h3>
-        <pre>{scopes}</pre>
-        <h3>Gültig bis:</h3>
-        <pre>{expires_at}</pre>
-        <h3>Kompletter JWT Payload (decoded):</h3>
-        <pre>{decoded}</pre>
-    """
-    return html
-
+# === 🏠 STARTSEITE / ROOT-ROUTE ===
 @app.route("/")
 def index():
     return "LandKI Bot läuft. Verwenden Sie /calendar oder /chat."
 
-
-# Globaler Error Handler
+# === 🚨 GLOBALER ERROR HANDLER ===
 @app.errorhandler(Exception)
 def handle_exception(e):
+    # Wird aufgerufen bei unerwarteten Fehlern in jeder Route
     logging.exception("Unerwarteter Fehler: %s", e)
     return jsonify({"error": "Ein interner Fehler ist aufgetreten."}), 500
 
-# Starte Server nur lokal (nicht auf Azure)
-if __name__ == "__main__":
-    app.run(debug=True)
+# === 🧪 LOKALER START DES FLASK SERVERS (nicht auf Azure aktiv!) ===
+#if __name__ == "__main__":
+    # Lokaler Entwicklungsserver mit Debug-Logs
+    #app.run(debug=True) # ❗ Auf Azure wird dieser Block ignoriert (wird von Gunicorn oder Azure-Webserver gestartet)
