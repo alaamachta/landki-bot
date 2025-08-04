@@ -373,7 +373,7 @@ def book():
         )
 
         # Token automatisch erneuern, falls nötig
-        if not refresh_token_if_needed(msal_app, token_cache):
+        if not refresh_token_if_needed():
             return jsonify({"error": "⚠️ Token abgelaufen. Bitte neu einloggen."}), 401
         access_token = session.get("access_token")
         if not access_token:
