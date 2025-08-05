@@ -25,7 +25,12 @@ from jwt import decode as jwt_decode
 
 # === 🚀 Flask Setup ===
 app = Flask(__name__)
-CORS(app, origins=["https://it-land.net"], supports_credentials=True)
+CORS(app,
+     origins=["https://it-land.net"],
+     supports_credentials=True,
+     methods=["GET", "POST", "OPTIONS"],
+     allow_headers=["Content-Type", "Authorization"])
+
 app.config["SESSION_COOKIE_SAMESITE"] = "None"
 app.config["SESSION_COOKIE_SECURE"] = True
 app.secret_key = os.getenv("SECRET_KEY") or os.urandom(24).hex()
